@@ -46,15 +46,34 @@ class VectorStore:
         if self._model is not None:
             return self._model
         import os
+        import warnings
+
         # HuggingFace mirror for China users
         if "HF_ENDPOINT" not in os.environ:
             os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
-        # Bypass SSL verification (common issue on corporate/China networks)
         os.environ.setdefault("HF_HUB_DISABLE_SSL_VERIFICATION", "1")
         os.environ.setdefault("CURL_CA_BUNDLE", "")
         os.environ.setdefault("REQUESTS_CA_BUNDLE", "")
-        from sentence_transformers import SentenceTransformer
-        self._model = SentenceTransformer(self._model_name)
+        warnings.filterwarnings("ignore", message=".*UNEXPECTED.*")
+
+        # Wrap stderr to filter out LOAD REPORT noise while keeping progress bars
+        _orig_stderr = sys.stderr
+        _filter_keys = ("LOAD REPORT", "UNEXPECTED", "Notes:", "embeddings.position", "--------+")
+
+        class _StderrFilter:
+            def write(self, text):
+                if any(k in text for k in _filter_keys):
+                    return
+                _orig_stderr.write(text)
+            def flush(self):
+                _orig_stderr.flush()
+
+        sys.stderr = _StderrFilter()
+        try:
+            from sentence_transformers import SentenceTransformer
+            self._model = SentenceTransformer(self._model_name)
+        finally:
+            sys.stderr = _orig_stderr
         return self._model
 
     def _embed(self, texts: list[str]) -> np.ndarray:

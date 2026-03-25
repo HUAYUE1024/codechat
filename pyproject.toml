@@ -1,0 +1,26 @@
+[project]
+name = "codechat"
+version = "0.1.0"
+description = "Local RAG-powered CLI tool for chatting with your codebase"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "codechat" }]
+dependencies = [
+    "click>=8.1",
+    "numpy>=1.24",
+    "sentence-transformers>=3.0",
+    "prompt-toolkit>=3.0",
+    "rich>=13.0",
+    "pathspec>=0.12",
+]
+
+[project.scripts]
+codechat = "codechat.cli:cli"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["codechat*"]

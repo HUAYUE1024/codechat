@@ -2,6 +2,14 @@
 
 from __future__ import annotations
 
+# ── HuggingFace env vars MUST be set before any HF import ──
+import os as _os
+_os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+_os.environ.setdefault("HF_HUB_DISABLE_SSL_VERIFICATION", "1")
+_os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+_os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+_os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
+
 import math
 import re
 import ssl
@@ -10,7 +18,6 @@ from collections import Counter
 import hashlib
 import json
 import sys
-import os
 import warnings
 import threading
 from contextlib import contextmanager
@@ -58,16 +65,13 @@ def _load_hf_model(model_name: str, model_class, use_hf_mirror: bool = True):
         _ssl_vars = (
             "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "HF_ENDPOINT", 
             "HF_HUB_DISABLE_SYMLINKS_WARNING", "HF_HUB_DISABLE_PROGRESS_BARS",
-            "HF_HUB_DISABLE_IMPLICIT_TOKEN", "HF_HUB_DISABLE_SSL_VERIFICATION",
-            "HF_HUB_OFFLINE"
+            "HF_HUB_DISABLE_IMPLICIT_TOKEN", "HF_HUB_DISABLE_SSL_VERIFICATION"
         )
         for k in _ssl_vars:
             _saved_env[k] = os.environ.get(k)
     
-        # HuggingFace mirror for China users
+        # HuggingFace mirror (also set at module level, but reinforce here)
         os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
-        # Force offline if model already cached (avoids hanging on network check)
-        os.environ["HF_HUB_OFFLINE"] = "1"
                 
         # Suppress symlinks warning on Windows
         os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"

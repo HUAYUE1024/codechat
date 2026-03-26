@@ -151,11 +151,11 @@ class SearchTool(Tool):
 
 class ReadFileTool(Tool):
     name = "read_file"
-    description = "读取文件内容（可指定行范围）"
+    description = "读取文件完整内容。默认读整个文件，可选指定行范围。"
 
     @property
     def parameters(self):
-        return {"path": "文件路径", "start": "起始行(可选)", "end": "结束行(可选)"}
+        return {"path": "文件路径", "start": "起始行(可选,默认读全部)", "end": "结束行(可选)"}
 
     def run(self, params: dict, ctx: dict) -> str:
         root: Path = ctx["root"]
@@ -182,11 +182,11 @@ class ReadFileTool(Tool):
         s = max(1, int(params.get("start", 1)))
         e = min(total, int(params.get("end", total)))
         
-        # Smart truncation to prevent token overflow (limit to max ~500 lines)
-        MAX_LINES = 500
+        # Smart truncation: allow up to 2000 lines per read
+        MAX_LINES = 2000
         if e - s + 1 > MAX_LINES:
             e = s + MAX_LINES - 1
-            trunc_msg = f"\n... [Truncated for length. Only showing {MAX_LINES} lines] ..."
+            trunc_msg = f"\n... [文件共{total}行，已读取前{MAX_LINES}行。如需后续内容请指定 start={e+1}] ..."
         else:
             trunc_msg = ""
             
@@ -822,11 +822,12 @@ AGENT_SYSTEM = """\
 
 1. 每次只调一个工具
 2. 不要重复搜索相同关键词
-3. 连续 3 次无结果则直接回答
-4. 最多 {max_steps} 轮
-5. 回答直接了当，不要"根据上下文"等废话
-6. 精确标注代码位置(文件:行号)
-7. 中文回答，代码术语英文
+3. 读文件时**一次读完整个文件**（不要分段读），除非文件超过2000行
+4. 连续 3 次无结果则直接回答
+5. 最多 {max_steps} 轮
+6. 回答直接了当，不要"根据上下文"等废话
+7. 精确标注代码位置(文件:行号)
+8. 中文回答，代码术语英文
 8. 当被要求修改代码、修复 Bug 或生成测试时，必须使用 write_file 或 search_replace 工具直接将代码写入项目，而不仅仅是提供代码建议！
 """
 
@@ -906,7 +907,7 @@ class CodeAgent:
         MAX_JSON_RETRIES = 3
         
         step = 0
-        _max = self.max_steps if self.max_steps > 0 else 20  # Hard cap at 20 even unlimited
+        _max = self.max_steps if self.max_steps > 0 else 50  # Default cap at 50, override with --steps
         _action_history: list[tuple[str, str]] = []  # (tool_name, params_str) for repeat detection
         _repeat_count = 0
         

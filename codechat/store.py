@@ -45,30 +45,32 @@ def _suppress_stderr():
 
 def _load_hf_model(model_name: str, model_class, use_hf_mirror: bool = True):
     """Generic function to load a HuggingFace model with proper env vars and stderr filtering."""
-    # Save original env vars to restore after loading
-    _saved_env = {}
-    _ssl_vars = ("CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "HF_ENDPOINT")
-    for k in _ssl_vars:
-        _saved_env[k] = os.environ.get(k)
-
-    # HuggingFace mirror for China users (if configured)
-    if use_hf_mirror and "HF_ENDPOINT" not in os.environ:
-        if os.environ.get("USE_HF_MIRROR", "false").lower() in ("true", "1", "yes"):
-            os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
-        
-    warnings.filterwarnings("ignore", message=".*UNEXPECTED.*")
+    # Acquire lock for the entire function to protect os.environ modifications
+    with _MODEL_LOAD_LOCK:
+        # Save original env vars to restore after loading
+        _saved_env = {}
+        _ssl_vars = ("CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "HF_ENDPOINT")
+        for k in _ssl_vars:
+            _saved_env[k] = os.environ.get(k)
     
-    with _suppress_stderr():
-        model = model_class(model_name)
-
-    # Restore original SSL env vars
-    for k in _ssl_vars:
-        if _saved_env[k] is None:
-            os.environ.pop(k, None)
-        else:
-            os.environ[k] = _saved_env[k]
-
-    return model
+        # HuggingFace mirror for China users (if configured)
+        if use_hf_mirror and "HF_ENDPOINT" not in os.environ:
+            if os.environ.get("USE_HF_MIRROR", "false").lower() in ("true", "1", "yes"):
+                os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+            
+        warnings.filterwarnings("ignore", message=".*UNEXPECTED.*")
+        
+        with _suppress_stderr():
+            model = model_class(model_name)
+    
+        # Restore original SSL env vars
+        for k in _ssl_vars:
+            if _saved_env[k] is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = _saved_env[k]
+    
+        return model
 
 
 def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> np.ndarray:
@@ -310,10 +312,20 @@ class VectorStore:
                     chunk_path = temp_dir / f"{i // CHUNK_SIZE:04d}.npy"
                     np.save(str(chunk_path), chunk)
                     
-                # Atomic swap: remove old, rename new
+                # Atomic swap: move to temp name, then rename over
                 if self._embeddings_dir.exists():
-                    shutil.rmtree(self._embeddings_dir, ignore_errors=True)
+                    backup_dir = self.codechat_dir / "embeddings_old_tmp"
+                    shutil.rmtree(backup_dir, ignore_errors=True)
+                    try:
+                        shutil.move(str(self._embeddings_dir), str(backup_dir))
+                    except Exception:
+                        pass
                 shutil.move(str(temp_dir), str(self._embeddings_dir))
+                
+                # Cleanup backup
+                backup_dir = self.codechat_dir / "embeddings_old_tmp"
+                if backup_dir.exists():
+                    shutil.rmtree(backup_dir, ignore_errors=True)
             finally:
                 if temp_dir.exists():
                     shutil.rmtree(temp_dir, ignore_errors=True)

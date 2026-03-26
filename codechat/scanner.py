@@ -89,9 +89,26 @@ def scan_files(project_root: Path, extra_extensions: set[str] | None = None) -> 
 
 
 def read_file(path: Path) -> str | None:
-    """Read a file, returning None if it's binary or unreadable."""
+    """Read a text file, handling potential encoding issues."""
+    # First try fast binary check
     try:
-        text = path.read_text(encoding="utf-8", errors="strict")
-        return text
-    except (UnicodeDecodeError, OSError):
+        with open(path, "rb") as f:
+            chunk = f.read(1024)
+            if b"\0" in chunk:
+                return None
+    except OSError:
+        return None
+
+    # Try common encodings
+    encodings = ["utf-8", "gbk", "gb2312", "latin-1", "cp1252"]
+    for enc in encodings:
+        try:
+            return path.read_text(encoding=enc, errors="strict")
+        except UnicodeDecodeError:
+            continue
+            
+    # Fallback to utf-8 with replacement if all strict reads fail
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
         return None

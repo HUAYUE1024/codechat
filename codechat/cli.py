@@ -210,6 +210,8 @@ def ingest(
     table.add_row("Files unchanged (skipped)", str(unchanged_count))
     if deleted_rels:
         table.add_row("Files deleted", str(len(deleted_rels)))
+    if removed_count > 0:
+        table.add_row("Chunks removed", str(removed_count))
     table.add_row("New chunks", str(len(new_chunks)))
     table.add_row("Total chunks in store", str(store.count()))
     console.print(table)
@@ -552,17 +554,22 @@ def _run_skill_common(skill_name: str, target: str, path: str | None, model: str
         console.print()
         markdown_content = ""
         is_answer = False
+        think_buf: list[str] = []
 
         with Live(Markdown(""), console=console, refresh_per_second=10) as live:
             def on_think(t: str):
                 nonlocal is_answer
                 if not is_answer and t.strip():
-                    pass
+                    think_buf.append(t)
 
             def on_answer(t: str):
                 nonlocal is_answer, markdown_content
                 if not is_answer:
                     is_answer = True
+                    if thinking:
+                        if think_buf:
+                            console.print(f"[dim]{''.join(think_buf)}[/]")
+                        console.print("[dim]=== Answer ===[/]")
                 
                 markdown_content += t
                 live.update(Markdown(markdown_content))

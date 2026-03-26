@@ -334,26 +334,28 @@ Yes. `codechat ingest --reset` to rebuild.
 ## Recent Updates (v0.2.0)
 
 **Architecture & Reliability Improvements**
-- **Robust JSON Parsing**: Upgraded the Agent's JSON parser to handle markdown blocks and malformed LLM outputs effectively.
+- **Robust JSON Parsing**: Upgraded the Agent's JSON parser to handle markdown blocks and malformed LLM outputs. Handled `ValueError` gracefully to prevent Agent crashes.
 - **Enhanced Long-Term Memory**: Replaced weak token-overlap recall with a robust Bigram/Trigram semantic matching algorithm and upgraded hashing to SHA-256.
 - **Reliable Incremental Indexing**: File change detection now uses `mtime` + `size` + `content SHA256` to prevent false negatives when mtime changes but content remains identical.
-- **Atomic Operations**: Vector store persistence (`_save()`) now utilizes temp-file atomic swaps to completely prevent data corruption during unexpected crashes.
-- **Safety Measures**: The Agent's `write_file` tool now automatically creates `.bak` backups before overwriting any user code.
+- **Atomic Operations**: Vector store persistence (`_save()`) now utilizes double-rename atomic swaps (`move` to tmp, then `move` over) to completely eliminate vulnerability windows during unexpected crashes.
+- **Safety Measures**: Both the Agent's `write_file` and `search_replace` tools now automatically create `.bak` backups before modifying any user code.
 - **Error Visibility**: Dimension mismatch and corrupted index errors are now explicitly printed to the CLI instead of failing silently.
 - **ReDoS Protection**: Added static regex vulnerability checks in the `find_pattern` tool to prevent catastrophic backtracking.
-- **Chat Thinking Mode**: Fixed an issue where reasoning tokens were silently discarded in the interactive chat REPL.
+- **Thinking Mode**: Fixed an issue where reasoning tokens were silently discarded in the interactive chat REPL and all `skill` commands.
+- **Robust File Reading**: `scanner.py` now attempts fallback decodings (GBK, Latin-1, etc.) for non-UTF-8 source files instead of silently ignoring them.
 
 **Performance & Stability**
-- **Thread Safety**: Fixed race conditions in `stderr` filtering, `FindPatternTool`, and file chunk merging during multi-threaded operations.
+- **Thread Safety**: Fixed race conditions in `stderr` filtering and file chunk merging. Re-architected `FindPatternTool` to use `as_completed` with Future cancellation to avoid blocking after early breaks.
 - **BM25 Optimization**: Switched to boolean masking for `remove_documents` to avoid O(N) rebuilding, drastically speeding up incremental indexing on large codebases.
 - **LLM Retries**: Added exponential backoff retry mechanisms for all LLM API calls to handle network fluctuations and unstable local instances.
 - **Code Deduplication**: Unified HuggingFace model loading logic across embedding and reranking modules.
+- **Concurrency**: Wrapped HuggingFace model loading in a strict `RLock` to prevent concurrent modifications to environment variables (`HF_ENDPOINT`).
 
 **Configuration & DX**
 - **Environment Variables**: Added native `.env` file support via `python-dotenv`.
 - **Configurable History**: Added `CODECHAT_HISTORY_LIMIT` to customize the conversational memory window.
 - **HuggingFace Mirror**: HF mirror is now opt-in via `USE_HF_MIRROR=true` rather than hardcoded.
-- **Dependency Reduction**: Removed `prompt-toolkit` in favor of standard `readline` for a lighter installation footprint.
+- **Dependency Management**: Synchronized `requirements.txt` with `pyproject.toml`, completely removing unused `prompt-toolkit`. Added `removed_count` to the `ingest` CLI summary.
 
 **Security & Engineering**
 - **Privacy**: Added `.gitignore` to prevent accidental commits of `.codechat/` vector data.

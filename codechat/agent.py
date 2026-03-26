@@ -245,15 +245,21 @@ class FindPatternTool(Tool):
         files = scan_files(root)
         all_matches = []
         
-        # Use executor.map to safely collect results in order and avoid race conditions
+        # Determine a reasonable chunksize and use as_completed to allow early break
+        chunksize = max(1, len(files) // 100)
+        
         with concurrent.futures.ThreadPoolExecutor() as executor:
-            # Map returns an iterator that yields results in the same order as the input iterables
-            results = executor.map(lambda f: self._search_file(f, root, regex, file_glob), files)
+            # Submit futures instead of map to allow cancellation
+            futures = [executor.submit(self._search_file, f, root, regex, file_glob) for f in files]
             
-            for matches in results:
+            for future in concurrent.futures.as_completed(futures):
+                matches = future.result()
                 if matches:
                     all_matches.extend(matches)
                 if len(all_matches) >= 30:
+                    # Cancel remaining futures
+                    for f in futures:
+                        f.cancel()
                     break
                     
         return "\n".join(all_matches[:30]) if all_matches else "No matches."
@@ -437,9 +443,15 @@ class SearchReplaceTool(Tool):
             if old_str not in content:
                 return "Error: old_str not found in the file. Ensure exact matching including whitespace."
                 
+            # Create a backup if file exists
+            if full.exists():
+                import shutil
+                backup = full.with_suffix(full.suffix + ".bak")
+                shutil.copy2(full, backup)
+                
             new_content = content.replace(old_str, new_str, 1) # Only replace first occurrence to be safe
             full.write_text(new_content, encoding="utf-8")
-            return f"Successfully replaced code in `{path}`."
+            return f"Successfully replaced code in `{path}` (Backup saved as .bak)."
         except Exception as e:
             return f"Error modifying file: {e}"
 
@@ -914,7 +926,16 @@ class CodeAgent:
                     answer = "未找到相关代码，LLM 不可用。"
                 break
 
-            parsed = self._parse_json(raw)
+            try:
+                parsed = self._parse_json(raw)
+            except ValueError as e:
+                # Tell the LLM it produced invalid JSON so it can correct itself
+                err_msg = f"System Error: {e}. Please output valid JSON only."
+                self.memory_st.add("system", err_msg)
+                if on_step:
+                    on_step(step + 1, "system_error", "JSON parse failed, retrying...")
+                continue
+
             think = parsed.get("think", "")
 
             if on_think and think:

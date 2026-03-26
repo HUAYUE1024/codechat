@@ -906,10 +906,13 @@ class CodeAgent:
         MAX_JSON_RETRIES = 3
         
         step = 0
-        _max = self.max_steps if self.max_steps > 0 else 999
+        _max = self.max_steps if self.max_steps > 0 else 20  # Hard cap at 20 even unlimited
+        _action_history: list[tuple[str, str]] = []  # (tool_name, params_str) for repeat detection
+        _repeat_count = 0
+        
         while step < _max:
             # Build prompt
-            system = AGENT_SYSTEM.format(max_steps=self.max_steps if self.max_steps > 0 else "无限制")
+            system = AGENT_SYSTEM.format(max_steps=_max)
             tools_desc = self.tools.list_definitions()
             mem_ctx = self.memory_st.get_context()
 
@@ -986,6 +989,21 @@ class CodeAgent:
                 on_step(step + 1, tool_name, preview)
 
             self.memory_st.add("tool", f"[{tool_name}] {result.output[:500]}", tool_name=tool_name)
+
+            # Repeat detection: same tool + same params = loop
+            action_key = (tool_name, json.dumps(params, sort_keys=True, ensure_ascii=False)[:100])
+            if action_key in _action_history:
+                _repeat_count += 1
+            else:
+                _repeat_count = 0
+            _action_history.append(action_key)
+            if _repeat_count >= 2:
+                answer = f"检测到重复操作（连续 {_repeat_count+1} 次相同调用），强制输出当前结论：\n\n"
+                # Ask LLM one more time to summarize what we know
+                summary_prompt = f"基于已收集的信息，直接回答用户问题：{question}"
+                summary = self.llm.complete("直接回答，不要调用工具。", summary_prompt, temperature=0.3)
+                answer += summary if summary else "无法得出结论。"
+                break
 
             if plan:
                 if result.success:

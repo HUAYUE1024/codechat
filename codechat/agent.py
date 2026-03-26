@@ -906,9 +906,10 @@ class CodeAgent:
         MAX_JSON_RETRIES = 3
         
         step = 0
-        while step < self.max_steps:
+        _max = self.max_steps if self.max_steps > 0 else 999
+        while step < _max:
             # Build prompt
-            system = AGENT_SYSTEM.format(max_steps=self.max_steps)
+            system = AGENT_SYSTEM.format(max_steps=self.max_steps if self.max_steps > 0 else "无限制")
             tools_desc = self.tools.list_definitions()
             mem_ctx = self.memory_st.get_context()
 

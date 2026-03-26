@@ -692,7 +692,7 @@ def test_suggest(target: tuple[str, ...], path: str | None, model: str | None, s
 @click.argument("question", nargs=-1, required=True)
 @click.option("--path", "-p", default=None, help="Project root path")
 @click.option("--model", "-m", default=None, help="LLM model to use")
-@click.option("--steps", "-s", default=5, type=int, help="Max agent steps (default 5)")
+@click.option("--steps", "-s", default=0, type=int, help="Max agent steps (0=unlimited, default 0)")
 @click.option("--no-plan", is_flag=True, help="Skip planning phase")
 def agent(question: tuple[str, ...], path: str | None, model: str | None, steps: int, no_plan: bool):
     """Multi-step agent: Planning + Tools + Memory + Action + LLM."""

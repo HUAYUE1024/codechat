@@ -54,9 +54,9 @@ def cli():
 
 @cli.command()
 @click.option("--path", "-p", default=None, help="Project root path (default: auto-detect)")
-@click.option("--reset", is_flag=True, help="Clear existing index before ingesting")
+@click.option("--reset", is_flag=True, help="Full rebuild: clear and re-index everything")
 @click.option("--chunk-size", default=None, type=int, help="Chunk size in characters")
-@click.option("--chunk-overlap", default=None, type=int, help="Chunk overlap in characters")
+@click.option("--chunk-overlap", default=None, type=int, help="Chunk overlap in lines")
 @click.option("--model", "-m", default=None, help="Embedding model name")
 def ingest(
     path: str | None,
@@ -65,7 +65,7 @@ def ingest(
     chunk_overlap: int | None,
     model: str | None,
 ):
-    """Ingest a project - scan files and build the vector index."""
+    """Ingest a project — full or incremental (only changed files)."""
     from .config import DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_OVERLAP
 
     root = Path(path).resolve() if path else _find_project_root()
@@ -81,13 +81,15 @@ def ingest(
     with console.status("[bold green]Initializing embedding model...", spinner="dots"):
         store = VectorStore(root, embedding_model=emb_model)
 
-    existing_count = store.count()
-    if reset or existing_count > 0:
-        if existing_count > 0 and not reset:
-            console.print(f"  [dim]Replacing existing index ({existing_count} chunks)...[/]")
+    # Full rebuild
+    if reset:
         store.reset()
+        old_hashes: dict[str, str] = {}
+        console.print("  [yellow]Index reset — full rebuild.[/]\n")
+    else:
+        old_hashes = store.load_hashes()
 
-    # Scan files
+    # Scan files and compute hashes
     with console.status("[bold green]Scanning project files...", spinner="dots"):
         files = scan_files(root)
 
@@ -95,51 +97,100 @@ def ingest(
         console.print("[red]No code files found in the project.[/]")
         return
 
-    console.print(f"  Found [bold]{len(files)}[/] files\n")
+    # Compute current hashes and diff
+    new_hashes: dict[str, str] = {}
+    files_to_process: list[Path] = []
+    unchanged_count = 0
 
-    # Chunk all files
-    all_chunks = []
-    file_chunk_counts: dict[str, int] = {}
+    for f in files:
+        rel = str(f.relative_to(root))
+        h = store.file_hash(f)
+        if not h:
+            continue
+        new_hashes[rel] = h
+        if old_hashes.get(rel) == h:
+            unchanged_count += 1
+        else:
+            files_to_process.append(f)
 
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TaskProgressColumn(),
-        console=console,
-    ) as progress:
-        task = progress.add_task("Chunking files...", total=len(files))
-        for f in files:
-            rel = str(f.relative_to(root))
-            content = read_file(f)
-            if content:
-                chunks = chunk_file(rel, content, c_size, c_overlap)
-                all_chunks.extend(chunks)
-                file_chunk_counts[rel] = len(chunks)
+    # Find deleted files
+    current_rels = set(new_hashes.keys())
+    deleted_rels = set(old_hashes.keys()) - current_rels
+
+    # Remove chunks for deleted and changed files
+    removed_count = 0
+    for rel in deleted_rels:
+        removed_count += store.remove_by_file(rel)
+    for f in files_to_process:
+        rel = str(f.relative_to(root))
+        removed_count += store.remove_by_file(rel)
+
+    # Report diff
+    if old_hashes:
+        console.print(f"  Files: [bold]{len(files)}[/] total, "
+                       f"[green]{unchanged_count}[/] unchanged, "
+                       f"[yellow]{len(files_to_process)}[/] changed/new, "
+                       f"[red]{len(deleted_rels)}[/] deleted")
+        if not files_to_process and not deleted_rels:
+            console.print(f"  [green]Index is up to date.[/]")
+            # Still save hashes in case format changed
+            store.save_hashes(new_hashes)
+            save_config(root, {
+                "embedding_model": emb_model,
+                "chunk_size": c_size,
+                "chunk_overlap": c_overlap,
+                "last_ingest": time.time(),
+                "files_count": len(files),
+                "chunks_count": store.count(),
+            })
+            return
+        console.print()
+    else:
+        console.print(f"  Found [bold]{len(files)}[/] files (first ingest)\n")
+
+    # Chunk only changed/new files
+    new_chunks = []
+    if files_to_process:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Chunking...", total=len(files_to_process))
+            for f in files_to_process:
+                rel = str(f.relative_to(root))
+                content = read_file(f)
+                if content:
+                    chunks = chunk_file(rel, content, c_size, c_overlap)
+                    new_chunks.extend(chunks)
+                progress.advance(task)
+
+    if new_chunks:
+        console.print(f"  Generated [bold]{len(new_chunks)}[/] chunks from {len(files_to_process)} files\n")
+
+        # Embed and add
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Embedding & indexing...", total=1)
+            store.add_chunks(new_chunks)
             progress.advance(task)
 
-    console.print(f"  Generated [bold]{len(all_chunks)}[/] chunks\n")
-
-    # Add to vector store
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TaskProgressColumn(),
-        console=console,
-    ) as progress:
-        task = progress.add_task("Embedding & indexing...", total=1)
-        added = store.add_chunks(all_chunks)
-        progress.advance(task)
-
-    # Save config
+    # Save hashes and config
+    store.save_hashes(new_hashes)
     save_config(root, {
         "embedding_model": emb_model,
         "chunk_size": c_size,
         "chunk_overlap": c_overlap,
         "last_ingest": time.time(),
         "files_count": len(files),
-        "chunks_count": len(all_chunks),
+        "chunks_count": store.count(),
     })
 
     # Summary
@@ -147,9 +198,12 @@ def ingest(
     table.add_column("Metric", style="cyan")
     table.add_column("Value", style="green")
     table.add_row("Files scanned", str(len(files)))
-    table.add_row("Chunks created", str(len(all_chunks)))
-    table.add_row("Chunks indexed", str(added))
-    table.add_row("Vector DB size", str(store.count()))
+    table.add_row("Files processed", str(len(files_to_process)))
+    table.add_row("Files unchanged (skipped)", str(unchanged_count))
+    if deleted_rels:
+        table.add_row("Files deleted", str(len(deleted_rels)))
+    table.add_row("New chunks", str(len(new_chunks)))
+    table.add_row("Total chunks in store", str(store.count()))
     console.print(table)
     console.print("\n[bold green]Done![/] You can now run [cyan]codechat ask \"...\"[/]\n")
 

@@ -29,6 +29,7 @@ class VectorStore:
 
         self._embeddings_path = self.codechat_dir / "embeddings.npy"
         self._metadata_path = self.codechat_dir / "metadata.json"
+        self._hashes_path = self.codechat_dir / "file_hashes.json"
         self._model_name = embedding_model
 
         self._model = None  # lazy load
@@ -121,6 +122,65 @@ class VectorStore:
             # Empty — remove files
             self._embeddings_path.unlink(missing_ok=True)
             self._metadata_path.unlink(missing_ok=True)
+
+    # -------------------------------------------------------------- file hashes
+
+    def load_hashes(self) -> dict[str, str]:
+        """Load stored file hashes: {rel_path: hash_string}."""
+        if self._hashes_path.exists():
+            try:
+                return json.loads(self._hashes_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        return {}
+
+    def save_hashes(self, hashes: dict[str, str]) -> None:
+        """Save file hashes to disk."""
+        self._hashes_path.write_text(
+            json.dumps(hashes, ensure_ascii=False, indent=None),
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def file_hash(path: Path) -> str:
+        """Compute a fast hash for a file (mtime + size)."""
+        try:
+            st = path.stat()
+            return f"{st.st_mtime_ns}:{st.st_size}"
+        except OSError:
+            return ""
+
+    def get_indexed_files(self) -> set[str]:
+        """Return set of file paths currently in the index."""
+        return {m["file_path"] for m in self._metadata}
+
+    def remove_by_file(self, file_path: str) -> int:
+        """Remove all chunks for a specific file. Returns count removed."""
+        if self._embeddings is None or not self._ids:
+            return 0
+
+        keep_indices = []
+        removed = 0
+        for i, meta in enumerate(self._metadata):
+            if meta["file_path"] == file_path:
+                removed += 1
+            else:
+                keep_indices.append(i)
+
+        if removed == 0:
+            return 0
+
+        if keep_indices:
+            self._embeddings = self._embeddings[keep_indices]
+            self._metadata = [self._metadata[i] for i in keep_indices]
+            self._ids = [self._ids[i] for i in keep_indices]
+        else:
+            self._embeddings = None
+            self._metadata = []
+            self._ids = []
+
+        self._save()
+        return removed
 
     # ------------------------------------------------------------------ public API
 

@@ -356,6 +356,7 @@ Yes. `codechat ingest --reset` to rebuild.
 - **Configurable History**: Added `CODECHAT_HISTORY_LIMIT` to customize the conversational memory window.
 - **HuggingFace Mirror**: HF mirror is now opt-in via `USE_HF_MIRROR=true` rather than hardcoded.
 - **Dependency Management**: Synchronized `requirements.txt` with `pyproject.toml`, completely removing unused `prompt-toolkit`. Added `removed_count` to the `ingest` CLI summary.
+- **Console Output**: Aggressively suppressed noisy output from `huggingface_hub` and `sentence-transformers`, including unauthenticated warnings, symlink errors, and download progress bars, resulting in a much cleaner CLI experience.
 
 **Security & Engineering**
 - **Privacy**: Added `.gitignore` to prevent accidental commits of `.codechat/` vector data.

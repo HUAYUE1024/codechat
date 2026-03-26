@@ -30,13 +30,13 @@ def _suppress_stderr():
         "LOAD REPORT", "UNEXPECTED", "Notes:", "embeddings.position", "--------+",
         "unauthenticated requests", "Loading weights", "model.safetensors",
         "config.json", "vocab.txt", "tokenizer.json", "tokenizer_config.json",
-        "special_tokens_map.json", "modules.json"
+        "special_tokens_map.json", "modules.json", "100%"
     )
 
     class _StderrFilter:
         def write(self, text):
             # We want to filter out progress bars and specific warnings
-            if any(k in text for k in _filter_keys) or "it/s]" in text or "?B/s]" in text or "%|" in text:
+            if any(k in text for k in _filter_keys) or "it/s]" in text or "?B/s]" in text or "%|" in text or "MB/s]" in text or "kB/s]" in text:
                 return
             _orig_stderr.write(text)
         def flush(self):
@@ -49,22 +49,23 @@ def _suppress_stderr():
         sys.stderr = _orig_stderr
 
 def _load_hf_model(model_name: str, model_class, use_hf_mirror: bool = True):
-        """Generic function to load a HuggingFace model with proper env vars and stderr filtering."""
-        # Acquire lock for the entire function to protect os.environ modifications
-        with _MODEL_LOAD_LOCK:
-            # Save original env vars to restore after loading
-            _saved_env = {}
-            _ssl_vars = (
-                "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "HF_ENDPOINT", 
-                "HF_HUB_DISABLE_SYMLINKS_WARNING", "HF_HUB_DISABLE_PROGRESS_BARS",
-                "HF_HUB_DISABLE_IMPLICIT_TOKEN"
-            )
-            for k in _ssl_vars:
-                _saved_env[k] = os.environ.get(k)
+    """Generic function to load a HuggingFace model with proper env vars and stderr filtering."""
+    # Acquire lock for the entire function to protect os.environ modifications
+    with _MODEL_LOAD_LOCK:
+        # Save original env vars to restore after loading
+        _saved_env = {}
+        _ssl_vars = (
+            "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "HF_ENDPOINT", 
+            "HF_HUB_DISABLE_SYMLINKS_WARNING", "HF_HUB_DISABLE_PROGRESS_BARS",
+            "HF_HUB_DISABLE_IMPLICIT_TOKEN", "HF_HUB_DISABLE_SSL_VERIFICATION"
+        )
+        for k in _ssl_vars:
+            _saved_env[k] = os.environ.get(k)
     
-        # HuggingFace mirror for China users (if configured)
+        # HuggingFace mirror for China users (Default to ON for better connectivity)
         if use_hf_mirror and "HF_ENDPOINT" not in os.environ:
-            if os.environ.get("USE_HF_MIRROR", "false").lower() in ("true", "1", "yes"):
+            # Always use HF mirror by default unless explicitly disabled
+            if os.environ.get("USE_HF_MIRROR", "true").lower() in ("true", "1", "yes"):
                 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
                 
         # Suppress symlinks warning on Windows
@@ -73,6 +74,8 @@ def _load_hf_model(model_name: str, model_class, use_hf_mirror: bool = True):
         os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
         # Suppress unauthenticated warnings
         os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
+        # Bypass SSL verification for model download (China/corporate networks)
+        os.environ["HF_HUB_DISABLE_SSL_VERIFICATION"] = "1"
             
         warnings.filterwarnings("ignore", message=".*UNEXPECTED.*")
         warnings.filterwarnings("ignore", message=".*unauthenticated requests.*")
@@ -270,7 +273,17 @@ class VectorStore:
     def _embed(self, texts: list[str]) -> np.ndarray:
         """Embed a list of texts into vectors."""
         model = self._get_model()
-        vecs = model.encode(texts, show_progress_bar=False, normalize_embeddings=True)
+        # Avoid thread lock issues with torch inside the threadpool
+        # by disabling tokenizer parallelism
+        os.environ["TOKENIZERS_PARALLELISM"] = "false"
+        
+        # Disable OpenMP and MKL thread parallelism which causes hard crashes on Windows
+        os.environ["OMP_NUM_THREADS"] = "1"
+        os.environ["MKL_NUM_THREADS"] = "1"
+        os.environ["OPENBLAS_NUM_THREADS"] = "1"
+        
+        # Batch size needs to be small enough to not cause OOM/crash
+        vecs = model.encode(texts, batch_size=32, show_progress_bar=False, normalize_embeddings=True)
         return np.array(vecs, dtype=np.float32)
 
     # -------------------------------------------------------------- persistence

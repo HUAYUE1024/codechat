@@ -153,6 +153,7 @@ def ingest(
     # Chunk only changed/new files
     new_chunks = []
     if files_to_process:
+        import concurrent.futures
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -161,13 +162,21 @@ def ingest(
             console=console,
         ) as progress:
             task = progress.add_task("Chunking...", total=len(files_to_process))
-            for f in files_to_process:
-                rel = str(f.relative_to(root))
-                content = read_file(f)
-                if content:
-                    chunks = chunk_file(rel, content, c_size, c_overlap)
+            
+            # Use ThreadPoolExecutor to parallelize file reading and chunking
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                def process_file(f):
+                    rel = str(f.relative_to(root))
+                    content = read_file(f)
+                    if content:
+                        return chunk_file(rel, content, c_size, c_overlap)
+                    return []
+
+                futures = [executor.submit(process_file, f) for f in files_to_process]
+                for future in concurrent.futures.as_completed(futures):
+                    chunks = future.result()
                     new_chunks.extend(chunks)
-                progress.advance(task)
+                    progress.advance(task)
 
     if new_chunks:
         console.print(f"  Generated [bold]{len(new_chunks)}[/] chunks from {len(files_to_process)} files\n")

@@ -97,9 +97,10 @@ codechat ingest --reset  # full rebuild
 **How it works:**
 1. Each file's hash (mtime + size) is stored in `.codechat/file_hashes.json`
 2. On subsequent runs, hashes are compared to detect changes
-3. Only changed/new files are re-chunked and re-embedded
+3. Only changed/new files are re-chunked (via Multi-threaded AST parsing) and re-embedded
 4. Chunks from deleted files are automatically removed
-5. Unchanged files are completely skipped
+5. BM25 keyword index is updated incrementally (no full re-computation)
+6. Unchanged files are completely skipped
 
 ```
 Files: 42 total, 38 unchanged, 3 changed/new, 1 deleted
@@ -107,7 +108,7 @@ Files: 42 total, 38 unchanged, 3 changed/new, 1 deleted
 
 ## Agent Mode
 
-The agent decomposes complex questions into steps and uses tools to explore the codebase:
+The agent decomposes complex questions into steps and uses tools to explore and modify the codebase:
 
 ```
 codechat agent "how does the vector store persist data?"
@@ -124,15 +125,17 @@ Answer:
 The vector store persists data as NumPy .npy + JSON files...
 ```
 
-**5 built-in tools:**
+**7 built-in tools:**
 
 | Tool | Description |
 |------|-------------|
-| `search` | Semantic code search |
-| `read_file` | Read file content (with line range) |
-| `find_pattern` | Regex search across codebase |
+| `search` | Semantic code search (with LLM Query Expansion) |
+| `read_file` | Read file content (with line range & smart truncation) |
+| `find_pattern` | Regex search across codebase (Multi-threaded) |
 | `list_dir` | Browse directory structure |
-| `read_multiple` | Read multiple files simultaneously |
+| `read_multiple` | Read multiple files simultaneously (with token overflow protection) |
+| `write_file` | Create or overwrite entire files |
+| `search_replace` | Precision code modification / Bug fixing |
 
 **Memory system:**
 - **Short-term**: Sliding window of tool calls within a session (default 20 entries)
@@ -219,6 +222,9 @@ codechat ingest -m paraphrase-multilingual-MiniLM-L12-v2  # multilingual
 | `all-MiniLM-L6-v2` | 384 | 90MB | Fast, lower quality |
 | `paraphrase-multilingual-MiniLM-L12-v2` | 384 | 470MB | Multilingual |
 
+### Rerank Models
+`codechat` uses `cross-encoder/ms-marco-MiniLM-L-6-v2` by default to rerank the top results retrieved from the Vector+BM25 hybrid search, drastically improving precision.
+
 ## Architecture
 
 ```
@@ -231,15 +237,14 @@ codechat ingest -m paraphrase-multilingual-MiniLM-L12-v2  # multilingual
 │          │ │ Planning   │ │ compare/test-suggest │
 │          │ │ Memory     │ │                      │
 │          │ │ Action     │ │                      │
-│          │ │ Tools      │ │                      │
+│          │ │ Tools(I/O) │ │                      │
 │          │ └────────────┘ │                      │
 ├──────────┴────────────────┴──────────────────────┤
 │                   RAG Engine                     │
 ├──────────────────────────────────────────────────┤
 │ Scanner → Chunker → VectorStore → LLM Client    │
-│ (os.walk   (func-level  (NumPy .npy  (DashScope │
-│  pruning)   split +      + JSON)     OpenAI     │
-│            merge small)             Ollama)     │
+│ (Threads)  (AST)    (Hybrid+Rerank) (DashScope/ │
+│                      Chunked Npy     Ollama)    │
 └──────────────────────────────────────────────────┘
 ```
 
@@ -342,6 +347,11 @@ Yes. `codechat ingest --reset` to rebuild.
 - [x] Streaming Markdown rendering (Rich Live)
 - [x] Project Structure Tree with AST symbols
 - [x] Dependency Graph Rendering (Tree & Mermaid.js)
+- [x] Multi-threaded processing for file scanning and pattern matching
+- [x] Incremental BM25 updating & Chunked NumPy Storage
+- [x] Cross-Encoder Reranking
+- [x] Agent write_file and code modification capabilities
+- [x] Smart context truncation & LLM Query Expansion
 
 ## License
 

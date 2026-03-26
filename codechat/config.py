@@ -42,6 +42,9 @@ DEFAULT_CHUNK_OVERLAP = 5       # lines of overlap between chunks
 # Embedding model — all-mpnet-base-v2 for better code retrieval quality
 DEFAULT_EMBEDDING_MODEL = "all-mpnet-base-v2"
 
+# Rerank model — cross-encoder/ms-marco-MiniLM-L-6-v2 for lightweight reranking
+DEFAULT_RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+
 # Config dir inside project
 CODECHAT_DIR = ".codechat"
 

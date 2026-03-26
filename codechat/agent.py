@@ -126,7 +126,20 @@ class SearchTool(Tool):
         n = int(params.get("n", 5))
         if not query:
             return "Error: query required"
-        results = store.query(query, n_results=n)
+            
+        # Optional: Query Expansion via LLM to get better keywords
+        llm = ctx.get("llm")
+        expanded_query = query
+        if llm and llm.available:
+            prompt = "你是一个代码搜索专家。将以下用户问题转换为用于向量搜索的丰富关键词。包含可能的英文变量名、函数名和技术术语。不要解释，只返回关键词。"
+            try:
+                expanded = llm.complete(prompt, query).strip()
+                if expanded and len(expanded) < 200:
+                    expanded_query = f"{query} {expanded}"
+            except Exception:
+                pass
+                
+        results = store.query(expanded_query, n_results=n)
         if not results:
             return "No results."
         parts = []
@@ -168,10 +181,21 @@ class ReadFileTool(Tool):
         total = len(lines)
         s = max(1, int(params.get("start", 1)))
         e = min(total, int(params.get("end", total)))
+        
+        # Smart truncation to prevent token overflow (limit to max ~500 lines)
+        MAX_LINES = 500
+        if e - s + 1 > MAX_LINES:
+            e = s + MAX_LINES - 1
+            trunc_msg = f"\n... [Truncated for length. Only showing {MAX_LINES} lines] ..."
+        else:
+            trunc_msg = ""
+            
         numbered = "\n".join(f"{i+s:>4} | {l}" for i, l in enumerate(lines[s-1:e]))
         rel = str(full.relative_to(root))
-        return f"`{rel}` ({total} lines, showing {s}-{e})\n```\n{numbered}\n```"
+        return f"`{rel}` ({total} lines, showing {s}-{e})\n```\n{numbered}{trunc_msg}\n```"
 
+
+import concurrent.futures
 
 class FindPatternTool(Tool):
     name = "find_pattern"
@@ -181,12 +205,30 @@ class FindPatternTool(Tool):
     def parameters(self):
         return {"pattern": "正则表达式", "file_glob": "文件过滤(可选)"}
 
+    def _search_file(self, f: Path, root: Path, regex: re.Pattern, file_glob: str | None) -> list[str]:
+        matches = []
+        if file_glob:
+            rel = str(f.relative_to(root))
+            if not Path(rel).match(file_glob):
+                return matches
+        content = read_file(f)
+        if content is None:
+            return matches
+        for i, line in enumerate(content.splitlines(), 1):
+            search_line = line[:500]
+            try:
+                if regex.search(search_line):
+                    rel = str(f.relative_to(root))
+                    matches.append(f"`{rel}:{i}`  {line.strip()}")
+            except Exception:
+                continue
+        return matches
+
     def run(self, params: dict, ctx: dict) -> str:
         root: Path = ctx["root"]
         pattern = params.get("pattern", "")
         if not pattern:
             return "Error: pattern required"
-        # Limit pattern length to prevent ReDoS
         if len(pattern) > 200:
             return "Error: pattern too long (max 200 chars)"
         try:
@@ -194,28 +236,20 @@ class FindPatternTool(Tool):
         except re.error as e:
             return f"Invalid regex: {e}"
         file_glob = params.get("file_glob")
-        matches = []
+        
         files = scan_files(root)
-        for f in files:
-            if file_glob:
-                rel = str(f.relative_to(root))
-                if not Path(rel).match(file_glob):
-                    continue
-            content = read_file(f)
-            if content is None:
-                continue
-            for i, line in enumerate(content.splitlines(), 1):
-                # Truncate long lines to prevent ReDoS
-                search_line = line[:500]
-                try:
-                    if regex.search(search_line):
-                        rel = str(f.relative_to(root))
-                        matches.append(f"`{rel}:{i}`  {line.strip()}")
-                except Exception:
-                    continue
-            if len(matches) >= 30:
-                break
-        return "\n".join(matches[:30]) if matches else "No matches."
+        all_matches = []
+        
+        # Parallelize the file searching
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            futures = [executor.submit(self._search_file, f, root, regex, file_glob) for f in files]
+            for future in concurrent.futures.as_completed(futures):
+                matches = future.result()
+                all_matches.extend(matches)
+                if len(all_matches) >= 30:
+                    break
+                    
+        return "\n".join(all_matches[:30]) if all_matches else "No matches."
 
 
 class ListDirTool(Tool):
@@ -278,6 +312,9 @@ class ReadMultipleTool(Tool):
         if not spec:
             return "Error: files required"
         parts = []
+        MAX_TOTAL_LINES = 1000
+        total_lines_read = 0
+        
         for item in spec.split(","):
             item = item.strip()
             if not item:
@@ -302,9 +339,92 @@ class ReadMultipleTool(Tool):
                 continue
             lines = content.splitlines()
             s, e = max(1, s), min(len(lines), e)
-            numbered = "\n".join(f"{i+s:>4} | {l}" for i, l in enumerate(lines[s-1:e]))
-            parts.append(f"`{fp}` L{s}-{e}\n```\n{numbered}\n```")
+            
+            lines_to_read = e - s + 1
+            if total_lines_read + lines_to_read > MAX_TOTAL_LINES:
+                allowed = max(0, MAX_TOTAL_LINES - total_lines_read)
+                e = s + allowed - 1
+                trunc_msg = f"\n... [Truncated due to total line limit]"
+            else:
+                trunc_msg = ""
+                
+            if e >= s:
+                numbered = "\n".join(f"{i+s:>4} | {l}" for i, l in enumerate(lines[s-1:e]))
+                parts.append(f"`{fp}` L{s}-{e}\n```\n{numbered}{trunc_msg}\n```")
+                total_lines_read += (e - s + 1)
+                
+            if total_lines_read >= MAX_TOTAL_LINES:
+                parts.append("... [Maximum line limit reached for this read_multiple call]")
+                break
+                
         return "\n\n".join(parts)
+
+
+class WriteFileTool(Tool):
+    name = "write_file"
+    description = "写入或覆盖整个文件内容"
+
+    @property
+    def parameters(self):
+        return {"path": "文件路径", "content": "要写入的完整文件内容"}
+
+    def run(self, params: dict, ctx: dict) -> str:
+        root: Path = ctx["root"]
+        path = params.get("path", "")
+        content = params.get("content", "")
+        if not path:
+            return "Error: path required"
+            
+        full = (root / path).resolve()
+        if not full.is_relative_to(root):
+            return f"Access denied: path outside project root"
+            
+        try:
+            full.parent.mkdir(parents=True, exist_ok=True)
+            full.write_text(content, encoding="utf-8")
+            return f"Successfully wrote to `{path}` ({len(content)} chars)."
+        except Exception as e:
+            return f"Error writing file: {e}"
+
+
+class SearchReplaceTool(Tool):
+    name = "search_replace"
+    description = "搜索并替换文件中的指定代码块"
+
+    @property
+    def parameters(self):
+        return {
+            "path": "文件路径", 
+            "old_str": "要被替换的原始代码块(需精确匹配)", 
+            "new_str": "新的代码块"
+        }
+
+    def run(self, params: dict, ctx: dict) -> str:
+        root: Path = ctx["root"]
+        path = params.get("path", "")
+        old_str = params.get("old_str", "")
+        new_str = params.get("new_str", "")
+        
+        if not path or not old_str:
+            return "Error: path and old_str required"
+            
+        full = (root / path).resolve()
+        if not full.is_relative_to(root):
+            return f"Access denied: path outside project root"
+            
+        if not full.exists():
+            return f"Error: File not found `{path}`"
+            
+        try:
+            content = full.read_text(encoding="utf-8")
+            if old_str not in content:
+                return "Error: old_str not found in the file. Ensure exact matching including whitespace."
+                
+            new_content = content.replace(old_str, new_str, 1) # Only replace first occurrence to be safe
+            full.write_text(new_content, encoding="utf-8")
+            return f"Successfully replaced code in `{path}`."
+        except Exception as e:
+            return f"Error modifying file: {e}"
 
 
 class ToolRegistry:
@@ -347,6 +467,8 @@ def build_default_registry() -> ToolRegistry:
     reg.register(FindPatternTool())
     reg.register(ListDirTool())
     reg.register(ReadMultipleTool())
+    reg.register(WriteFileTool())
+    reg.register(SearchReplaceTool())
     return reg
 
 
@@ -592,7 +714,7 @@ class ActionExecutor:
 # ═══════════════════════════════════════════════════════════════════════
 
 AGENT_SYSTEM = """\
-你是一个代码探索 Agent，通过工具查找和分析代码。
+你是一个强大的代码 Agent，通过工具查找、分析并修改代码。
 
 ## 输出格式（每次回复必须是 JSON）
 
@@ -611,6 +733,7 @@ AGENT_SYSTEM = """\
 5. 回答直接了当，不要"根据上下文"等废话
 6. 精确标注代码位置(文件:行号)
 7. 中文回答，代码术语英文
+8. 当被要求修改代码、修复 Bug 或生成测试时，必须使用 write_file 或 search_replace 工具直接将代码写入项目，而不仅仅是提供代码建议！
 """
 
 
@@ -656,7 +779,7 @@ class CodeAgent:
         self.executor = ActionExecutor(self.tools, max_retries=1)
         self.planner = Planner(self.llm, self.tools.list_definitions())
 
-        self.ctx = {"store": store, "root": self.root}
+        self.ctx = {"store": store, "root": self.root, "llm": self.llm}
 
     def run(
         self,

@@ -13,7 +13,7 @@ import sys
 import numpy as np
 
 from .chunker import Chunk
-from .config import DEFAULT_EMBEDDING_MODEL, get_codechat_dir
+from .config import DEFAULT_EMBEDDING_MODEL, DEFAULT_RERANK_MODEL, get_codechat_dir
 
 
 def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> np.ndarray:
@@ -44,14 +44,18 @@ class BM25:
         self.corpus_size = 0
         
     def fit(self, corpus: list[str]):
-        self.corpus_size = len(corpus)
-        if self.corpus_size == 0:
+        self.corpus_size = 0
+        self.doc_freqs = []
+        self.df.clear()
+        self.doc_len = []
+        self.avgdl = 0.0
+        self.add_documents(corpus)
+        
+    def add_documents(self, docs: list[str]):
+        if not docs:
             return
             
-        self.doc_freqs = []
-        self.doc_len = []
-        
-        for doc in corpus:
+        for doc in docs:
             tokens = _tokenize(doc)
             self.doc_len.append(len(tokens))
             freqs = Counter(tokens)
@@ -59,7 +63,30 @@ class BM25:
             for token in freqs:
                 self.df[token] += 1
                 
-        self.avgdl = sum(self.doc_len) / self.corpus_size
+        self.corpus_size += len(docs)
+        if self.corpus_size > 0:
+            self.avgdl = sum(self.doc_len) / self.corpus_size
+            
+    def remove_documents(self, indices_to_remove: set[int]):
+        if not indices_to_remove:
+            return
+            
+        for idx in indices_to_remove:
+            freqs = self.doc_freqs[idx]
+            for token in freqs:
+                self.df[token] -= 1
+                if self.df[token] <= 0:
+                    del self.df[token]
+                    
+        keep_indices = [i for i in range(self.corpus_size) if i not in indices_to_remove]
+        self.doc_freqs = [self.doc_freqs[i] for i in keep_indices]
+        self.doc_len = [self.doc_len[i] for i in keep_indices]
+        
+        self.corpus_size = len(keep_indices)
+        if self.corpus_size > 0:
+            self.avgdl = sum(self.doc_len) / self.corpus_size
+        else:
+            self.avgdl = 0.0
         
     def score(self, query: str) -> np.ndarray:
         if self.corpus_size == 0:
@@ -109,7 +136,7 @@ class VectorStore:
         self.project_root = project_root.resolve()
         self.codechat_dir = get_codechat_dir(self.project_root)
 
-        self._embeddings_path = self.codechat_dir / "embeddings.npy"
+        self._embeddings_dir = self.codechat_dir / "embeddings"
         self._metadata_path = self.codechat_dir / "metadata.json"
         self._hashes_path = self.codechat_dir / "file_hashes.json"
         self._bm25_path = self.codechat_dir / "bm25.json"
@@ -132,6 +159,8 @@ class VectorStore:
                 self._model_name = DEFAULT_EMBEDDING_MODEL
 
         self._model = None  # lazy load
+        self._rerank_model = None
+        self._rerank_model_name = DEFAULT_RERANK_MODEL
 
         self._embeddings: np.ndarray | None = None
         self._metadata: list[dict] = []
@@ -189,6 +218,52 @@ class VectorStore:
 
         return self._model
 
+    def _get_rerank_model(self):
+        """Lazy-load the cross-encoder rerank model."""
+        if self._rerank_model is not None:
+            return self._rerank_model
+            
+        import os
+        import warnings
+        
+        # Save original env vars to restore after loading
+        _saved_env = {}
+        _ssl_vars = ("CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE")
+        for k in _ssl_vars:
+            _saved_env[k] = os.environ.get(k)
+
+        # HuggingFace mirror for China users
+        if "HF_ENDPOINT" not in os.environ:
+            os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+            
+        warnings.filterwarnings("ignore", message=".*UNEXPECTED.*")
+        
+        _orig_stderr = sys.stderr
+        _filter_keys = ("LOAD REPORT", "UNEXPECTED", "Notes:", "embeddings.position", "--------+")
+
+        class _StderrFilter:
+            def write(self, text):
+                if any(k in text for k in _filter_keys):
+                    return
+                _orig_stderr.write(text)
+            def flush(self):
+                _orig_stderr.flush()
+
+        sys.stderr = _StderrFilter()
+        try:
+            from sentence_transformers import CrossEncoder
+            self._rerank_model = CrossEncoder(self._rerank_model_name)
+        finally:
+            sys.stderr = _orig_stderr
+            # Restore original SSL env vars
+            for k in _ssl_vars:
+                if _saved_env[k] is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = _saved_env[k]
+
+        return self._rerank_model
+
     def _embed(self, texts: list[str]) -> np.ndarray:
         """Embed a list of texts into vectors."""
         model = self._get_model()
@@ -199,9 +274,8 @@ class VectorStore:
 
     def _load(self) -> None:
         """Load existing data from disk."""
-        if self._embeddings_path.exists() and self._metadata_path.exists():
+        if self._metadata_path.exists():
             try:
-                self._embeddings = np.load(str(self._embeddings_path))
                 raw = json.loads(self._metadata_path.read_text(encoding="utf-8"))
                 self._ids = raw.get("ids", [])
                 self._metadata = raw.get("metadata", [])
@@ -212,6 +286,21 @@ class VectorStore:
                     self._bm25.from_dict(bm25_data)
                 elif self._texts:
                     self._bm25.fit(self._texts)
+                    
+                # Load split embeddings
+                if self._embeddings_dir.exists() and self._ids:
+                    # Backward compatibility for old single file format
+                    old_single_path = self.codechat_dir / "embeddings.npy"
+                    if old_single_path.exists():
+                        self._embeddings = np.load(str(old_single_path))
+                        old_single_path.unlink() # Migrate to new format on next save
+                    else:
+                        npy_files = sorted(self._embeddings_dir.glob("*.npy"), key=lambda p: int(p.stem))
+                        if npy_files:
+                            arrays = [np.load(str(p)) for p in npy_files]
+                            self._embeddings = np.vstack(arrays)
+                        else:
+                            self._embeddings = None
             except Exception:
                 self._embeddings = None
                 self._metadata = []
@@ -222,7 +311,21 @@ class VectorStore:
     def _save(self) -> None:
         """Persist current data to disk."""
         if self._embeddings is not None and len(self._embeddings) > 0:
-            np.save(str(self._embeddings_path), self._embeddings)
+            # Ensure dir exists
+            self._embeddings_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Clean old split files
+            for p in self._embeddings_dir.glob("*.npy"):
+                p.unlink(missing_ok=True)
+                
+            # Split and save embeddings into chunks of 5000 to avoid massive IO
+            CHUNK_SIZE = 5000
+            total = len(self._embeddings)
+            for i in range(0, total, CHUNK_SIZE):
+                chunk = self._embeddings[i:i + CHUNK_SIZE]
+                chunk_path = self._embeddings_dir / f"{i // CHUNK_SIZE:04d}.npy"
+                np.save(str(chunk_path), chunk)
+
             self._metadata_path.write_text(
                 json.dumps({
                     "ids": self._ids, 
@@ -237,9 +340,13 @@ class VectorStore:
             )
         else:
             # Empty — remove files
-            self._embeddings_path.unlink(missing_ok=True)
+            if self._embeddings_dir.exists():
+                import shutil
+                shutil.rmtree(self._embeddings_dir, ignore_errors=True)
             self._metadata_path.unlink(missing_ok=True)
             self._bm25_path.unlink(missing_ok=True)
+            old_single_path = self.codechat_dir / "embeddings.npy"
+            old_single_path.unlink(missing_ok=True)
 
     # -------------------------------------------------------------- file hashes
 
@@ -278,10 +385,12 @@ class VectorStore:
             return 0
 
         keep_indices = []
+        remove_indices = set()
         removed = 0
         for i, meta in enumerate(self._metadata):
             if meta["file_path"] == file_path:
                 removed += 1
+                remove_indices.add(i)
             else:
                 keep_indices.append(i)
 
@@ -294,7 +403,7 @@ class VectorStore:
             self._ids = [self._ids[i] for i in keep_indices]
             if self._texts:
                 self._texts = [self._texts[i] for i in keep_indices]
-                self._bm25.fit(self._texts)
+                self._bm25.remove_documents(remove_indices)
         else:
             self._embeddings = None
             self._metadata = []
@@ -350,13 +459,13 @@ class VectorStore:
         self._ids.extend(dedup_ids)
         self._metadata.extend(dedup_meta)
         self._texts.extend(dedup_texts)
-        self._bm25.fit(self._texts)
+        self._bm25.add_documents(dedup_texts)
 
         self._save()
         return len(dedup_ids)
 
-    def query(self, text: str, n_results: int = 5, hybrid_alpha: float = 0.5) -> list[dict]:
-        """Search for similar code chunks using hybrid search (Vector + BM25)."""
+    def query(self, text: str, n_results: int = 5, hybrid_alpha: float = 0.5, use_rerank: bool = True) -> list[dict]:
+        """Search for similar code chunks using hybrid search (Vector + BM25) and optional Rerank."""
         if self._embeddings is None or len(self._embeddings) == 0:
             return []
 
@@ -392,9 +501,40 @@ class VectorStore:
                 boosts[i] = 0.7
         sims = sims * boosts
 
-        # Retrieve more candidates, then diversify by file
-        candidate_k = min(n_results * 5, len(sims))
+        # Retrieve more candidates for reranking
+        candidate_k = min(n_results * 10, len(sims))
         candidate_idx = np.argsort(sims)[-candidate_k:][::-1]
+        
+        # Reranking with Cross-Encoder
+        if use_rerank and candidate_k > 0:
+            try:
+                # Prepare data for reranking
+                results_to_rerank = []
+                for idx in candidate_idx:
+                    results_to_rerank.append({
+                        "content": "",
+                        "metadata": self._metadata[idx],
+                        "index": idx
+                    })
+                
+                # We need content for reranking
+                self._attach_content(results_to_rerank)
+                
+                rerank_model = self._get_rerank_model()
+                pairs = [[text, r["content"]] for r in results_to_rerank]
+                
+                # Cross-Encoder scores (higher is better)
+                rerank_scores = rerank_model.predict(pairs)
+                
+                # Update candidate_idx based on rerank scores
+                reranked_indices = np.argsort(rerank_scores)[::-1]
+                candidate_idx = [results_to_rerank[i]["index"] for i in reranked_indices]
+                # Update sims for picked results (optional, for debugging)
+                for i, score in enumerate(rerank_scores):
+                    sims[results_to_rerank[i]["index"]] = float(score)
+            except Exception as e:
+                # Fallback to hybrid search if rerank fails
+                pass
 
         # Pick top results ensuring no more than 1 chunk per file first, then allow 2
         seen_files: dict[str, int] = {}

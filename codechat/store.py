@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import re
+import ssl
 from pathlib import Path
 from collections import Counter
 import hashlib
@@ -76,6 +77,10 @@ def _load_hf_model(model_name: str, model_class, use_hf_mirror: bool = True):
         os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
         # Bypass SSL verification for model download (China/corporate networks)
         os.environ["HF_HUB_DISABLE_SSL_VERIFICATION"] = "1"
+        
+        # Also disable at Python ssl module level
+        _orig_https_ctx = ssl._create_default_https_context
+        ssl._create_default_https_context = ssl._create_unverified_context
             
         warnings.filterwarnings("ignore", message=".*UNEXPECTED.*")
         warnings.filterwarnings("ignore", message=".*unauthenticated requests.*")
@@ -89,6 +94,9 @@ def _load_hf_model(model_name: str, model_class, use_hf_mirror: bool = True):
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = _saved_env[k]
+        
+        # Restore original SSL context
+        ssl._create_default_https_context = _orig_https_ctx
     
         return model
 

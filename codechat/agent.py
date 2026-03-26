@@ -246,11 +246,20 @@ class FindPatternTool(Tool):
         all_matches = []
         
         # Determine a reasonable chunksize and use as_completed to allow early break
-        chunksize = max(1, len(files) // 100)
+        # We don't actually use chunksize for ThreadPoolExecutor.submit, it's just for reference if we used map.
+        # But we will use a threading Event to allow true cancellation of running threads if supported
+        # or at least prevent new tasks from doing work.
+        import threading
+        cancel_event = threading.Event()
         
+        def _search_wrapper(f, root, regex, file_glob):
+            if cancel_event.is_set():
+                return []
+            return self._search_file(f, root, regex, file_glob)
+            
         with concurrent.futures.ThreadPoolExecutor() as executor:
             # Submit futures instead of map to allow cancellation
-            futures = [executor.submit(self._search_file, f, root, regex, file_glob) for f in files]
+            futures = [executor.submit(_search_wrapper, f, root, regex, file_glob) for f in files]
             
             for future in concurrent.futures.as_completed(futures):
                 matches = future.result()
@@ -258,6 +267,7 @@ class FindPatternTool(Tool):
                     all_matches.extend(matches)
                 if len(all_matches) >= 30:
                     # Cancel remaining futures
+                    cancel_event.set()
                     for f in futures:
                         f.cancel()
                     break
@@ -892,8 +902,11 @@ class CodeAgent:
         # 3. Execute loop
         answer = ""
         no_result_streak = 0
-
-        for step in range(self.max_steps):
+        json_retries = 0
+        MAX_JSON_RETRIES = 3
+        
+        step = 0
+        while step < self.max_steps:
             # Build prompt
             system = AGENT_SYSTEM.format(max_steps=self.max_steps)
             tools_desc = self.tools.list_definitions()
@@ -928,13 +941,23 @@ class CodeAgent:
 
             try:
                 parsed = self._parse_json(raw)
+                json_retries = 0 # Reset on success
             except ValueError as e:
+                json_retries += 1
+                if json_retries >= MAX_JSON_RETRIES:
+                    answer = f"Error: LLM consistently returns invalid JSON after {MAX_JSON_RETRIES} attempts. Raw output:\n{raw}"
+                    break
+                    
                 # Tell the LLM it produced invalid JSON so it can correct itself
                 err_msg = f"System Error: {e}. Please output valid JSON only."
                 self.memory_st.add("system", err_msg)
                 if on_step:
                     on_step(step + 1, "system_error", "JSON parse failed, retrying...")
+                # Do not increment step counter on JSON parse failure
                 continue
+
+            # Increment step counter only for successful valid JSON parse
+            step += 1
 
             think = parsed.get("think", "")
 

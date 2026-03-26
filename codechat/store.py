@@ -24,41 +24,58 @@ _MODEL_LOAD_LOCK = threading.RLock()
 
 @contextmanager
 def _suppress_stderr():
-    """Context manager to filter stderr output thread-safely using a lock."""
-    with _MODEL_LOAD_LOCK:
-        _orig_stderr = sys.stderr
-        _filter_keys = ("LOAD REPORT", "UNEXPECTED", "Notes:", "embeddings.position", "--------+")
+    """Context manager to filter stderr output thread-safely."""
+    _orig_stderr = sys.stderr
+    _filter_keys = (
+        "LOAD REPORT", "UNEXPECTED", "Notes:", "embeddings.position", "--------+",
+        "unauthenticated requests", "Loading weights", "model.safetensors",
+        "config.json", "vocab.txt", "tokenizer.json", "tokenizer_config.json",
+        "special_tokens_map.json", "modules.json"
+    )
 
-        class _StderrFilter:
-            def write(self, text):
-                if any(k in text for k in _filter_keys):
-                    return
-                _orig_stderr.write(text)
-            def flush(self):
-                _orig_stderr.flush()
+    class _StderrFilter:
+        def write(self, text):
+            # We want to filter out progress bars and specific warnings
+            if any(k in text for k in _filter_keys) or "it/s]" in text or "?B/s]" in text or "%|" in text:
+                return
+            _orig_stderr.write(text)
+        def flush(self):
+            _orig_stderr.flush()
 
-        sys.stderr = _StderrFilter()
-        try:
-            yield
-        finally:
-            sys.stderr = _orig_stderr
+    sys.stderr = _StderrFilter()
+    try:
+        yield
+    finally:
+        sys.stderr = _orig_stderr
 
 def _load_hf_model(model_name: str, model_class, use_hf_mirror: bool = True):
-    """Generic function to load a HuggingFace model with proper env vars and stderr filtering."""
-    # Acquire lock for the entire function to protect os.environ modifications
-    with _MODEL_LOAD_LOCK:
-        # Save original env vars to restore after loading
-        _saved_env = {}
-        _ssl_vars = ("CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "HF_ENDPOINT")
-        for k in _ssl_vars:
-            _saved_env[k] = os.environ.get(k)
+        """Generic function to load a HuggingFace model with proper env vars and stderr filtering."""
+        # Acquire lock for the entire function to protect os.environ modifications
+        with _MODEL_LOAD_LOCK:
+            # Save original env vars to restore after loading
+            _saved_env = {}
+            _ssl_vars = (
+                "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "HF_ENDPOINT", 
+                "HF_HUB_DISABLE_SYMLINKS_WARNING", "HF_HUB_DISABLE_PROGRESS_BARS",
+                "HF_HUB_DISABLE_IMPLICIT_TOKEN"
+            )
+            for k in _ssl_vars:
+                _saved_env[k] = os.environ.get(k)
     
         # HuggingFace mirror for China users (if configured)
         if use_hf_mirror and "HF_ENDPOINT" not in os.environ:
             if os.environ.get("USE_HF_MIRROR", "false").lower() in ("true", "1", "yes"):
                 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+                
+        # Suppress symlinks warning on Windows
+        os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+        # Suppress tqdm progress bars from huggingface_hub
+        os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+        # Suppress unauthenticated warnings
+        os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
             
         warnings.filterwarnings("ignore", message=".*UNEXPECTED.*")
+        warnings.filterwarnings("ignore", message=".*unauthenticated requests.*")
         
         with _suppress_stderr():
             model = model_class(model_name)
@@ -301,8 +318,8 @@ class VectorStore:
             import tempfile
             import shutil
             
-            # Write to a temporary directory first
-            temp_dir = Path(tempfile.mkdtemp(prefix="codechat_embeddings_"))
+            # Create a temporary directory in the SAME filesystem to ensure move is atomic
+            temp_dir = Path(tempfile.mkdtemp(prefix="codechat_embeddings_", dir=self.codechat_dir))
             try:
                 # Split and save embeddings into chunks of 5000 to avoid massive IO
                 CHUNK_SIZE = 5000
@@ -320,7 +337,13 @@ class VectorStore:
                         shutil.move(str(self._embeddings_dir), str(backup_dir))
                     except Exception:
                         pass
-                shutil.move(str(temp_dir), str(self._embeddings_dir))
+                
+                # To avoid cross-filesystem move issues, we copy then remove if move fails
+                try:
+                    shutil.move(str(temp_dir), str(self._embeddings_dir))
+                except OSError:
+                    # Fallback for cross-filesystem
+                    shutil.copytree(str(temp_dir), str(self._embeddings_dir))
                 
                 # Cleanup backup
                 backup_dir = self.codechat_dir / "embeddings_old_tmp"
@@ -332,6 +355,8 @@ class VectorStore:
 
             # Atomic write for JSON files
             def atomic_write_json(path: Path, data: dict):
+                # Use same directory for temp file to ensure it's on the same filesystem
+                # so replace() (which uses rename) is atomic and won't fail across filesystems
                 temp_path = path.with_suffix('.tmp')
                 temp_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
                 temp_path.replace(path)

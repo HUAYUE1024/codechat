@@ -100,7 +100,8 @@ def read_file(path: Path) -> str | None:
         return None
 
     # Try common encodings
-    encodings = ["utf-8", "gbk", "gb2312", "latin-1", "cp1252"]
+    # Omitted latin-1/cp1252 as they silently mask encoding errors leading to garbage text
+    encodings = ["utf-8", "gbk", "gb2312"]
     for enc in encodings:
         try:
             return path.read_text(encoding=enc, errors="strict")

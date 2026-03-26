@@ -337,7 +337,7 @@ Yes. `codechat ingest --reset` to rebuild.
 - **Robust JSON Parsing**: Upgraded the Agent's JSON parser to handle markdown blocks and malformed LLM outputs. Handled `ValueError` gracefully to prevent Agent crashes.
 - **Enhanced Long-Term Memory**: Replaced weak token-overlap recall with a robust Bigram/Trigram semantic matching algorithm and upgraded hashing to SHA-256.
 - **Reliable Incremental Indexing**: File change detection now uses `mtime` + `size` + `content SHA256` to prevent false negatives when mtime changes but content remains identical.
-- **Atomic Operations**: Vector store persistence (`_save()`) now utilizes double-rename atomic swaps (`move` to tmp, then `move` over) to completely eliminate vulnerability windows during unexpected crashes.
+- **Atomic Operations**: Vector store persistence (`_save()`) now utilizes double-rename atomic swaps (`move` to tmp, then `move` over) in the same filesystem to completely eliminate vulnerability windows during unexpected crashes.
 - **Safety Measures**: Both the Agent's `write_file` and `search_replace` tools now automatically create `.bak` backups before modifying any user code.
 - **Error Visibility**: Dimension mismatch and corrupted index errors are now explicitly printed to the CLI instead of failing silently.
 - **ReDoS Protection**: Added static regex vulnerability checks in the `find_pattern` tool to prevent catastrophic backtracking.

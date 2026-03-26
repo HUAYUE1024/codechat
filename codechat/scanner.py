@@ -16,7 +16,7 @@ def _load_gitignore(project_root: Path) -> pathspec.PathSpec | None:
     gitignore = project_root / ".gitignore"
     if gitignore.exists():
         lines = gitignore.read_text(encoding="utf-8", errors="ignore").splitlines()
-        return pathspec.PathSpec.from_lines("wildmatch", lines)
+        return pathspec.PathSpec.from_lines("gitwildmatch", lines)
     return None
 
 

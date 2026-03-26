@@ -1022,26 +1022,51 @@ class CodeAgent:
     def _parse_json(self, raw: str) -> dict | list:
         """Parse JSON robustly, even if wrapped in markdown blocks or text."""
         raw = raw.strip()
-        # Try finding json blocks
+
+        # 1. Try finding ```json ... ``` blocks
         json_blocks = re.findall(r"```(?:json)?\s*(.*?)\s*```", raw, re.DOTALL)
         for block in json_blocks:
             try:
                 return json.loads(block)
             except json.JSONDecodeError:
                 continue
-                
-        # Fallback to finding anything that looks like a JSON array or object
-        try:
-            match = re.search(r"(\{.*\}|\[.*\])", raw, re.DOTALL)
-            if match:
-                return json.loads(match.group(1))
-        except Exception:
-            pass
-            
+
+        # 2. Try finding { ... } or [ ... ] with balanced braces
+        for start_char, end_char in [("{", "}"), ("[", "]")]:
+            start = raw.find(start_char)
+            if start == -1:
+                continue
+            # Find matching end by counting braces
+            depth = 0
+            for i in range(start, len(raw)):
+                if raw[i] == start_char:
+                    depth += 1
+                elif raw[i] == end_char:
+                    depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(raw[start:i+1])
+                    except json.JSONDecodeError:
+                        break
+
+        # 3. Try raw text directly
         try:
             return json.loads(raw)
-        except Exception as e:
-            raise ValueError(f"Failed to parse JSON: {e}\nRaw output: {raw}")
+        except Exception:
+            pass
+
+        # 4. Last resort: extract think/answer from plain text
+        # Model might output "Think: xxx\nAnswer: xxx" without JSON
+        if "answer" in raw.lower() or "答" in raw:
+            # Try to extract answer portion
+            for marker in ["Answer:", "answer:", "回答：", "答案："]:
+                idx = raw.find(marker)
+                if idx != -1:
+                    answer_text = raw[idx + len(marker):].strip()
+                    return {"think": "", "answer": answer_text}
+
+        # Treat entire output as answer
+        return {"think": "", "answer": raw}
 
     def reset_memory(self):
         """Clear all memory."""

@@ -45,6 +45,28 @@ class LLMClient:
         """Non-streaming completion."""
         if not self.available:
             return ""
+            
+        if self.api_key == "ollama":
+            try:
+                import httpx
+                resp = httpx.post(
+                    f"{self.base_url}/api/chat",
+                    json={
+                        "model": self.model_name,
+                        "messages": [
+                            {"role": "system", "content": system},
+                            {"role": "user", "content": user},
+                        ],
+                        "stream": False,
+                    },
+                    timeout=120,
+                )
+                if resp.status_code == 200:
+                    return resp.json()["message"]["content"]
+                return f"[LLM Error] HTTP {resp.status_code}: {resp.text}"
+            except Exception as e:
+                return f"[LLM Error] {type(e).__name__}: {e}"
+                
         try:
             import openai
             client = openai.OpenAI(api_key=self.api_key, base_url=self.base_url)
@@ -206,7 +228,12 @@ class ListDirTool(Tool):
 
     def run(self, params: dict, ctx: dict) -> str:
         root: Path = ctx["root"]
-        target = root / params["path"] if params.get("path") else root
+        path = params.get("path", "")
+        target = (root / path).resolve() if path else root
+        
+        if not target.is_relative_to(root):
+            return f"Access denied: path outside project root"
+            
         depth = int(params.get("depth", 2))
         if not target.exists():
             return f"Not found: {params.get('path', '.')}"
@@ -468,7 +495,7 @@ PLANNER_PROMPT = """\
 你是一个任务规划器。根据用户目标，拆解为 2-5 个可执行步骤。
 
 输出 JSON 数组，每个元素：
-{"index": 1, "description": "步骤描述", "tool_hint": "建议使用的工具名(可选)"}
+{{"index": 1, "description": "步骤描述", "tool_hint": "建议使用的工具名(可选)"}}
 
 可用工具：
 {tools}
@@ -570,10 +597,10 @@ AGENT_SYSTEM = """\
 ## 输出格式（每次回复必须是 JSON）
 
 调用工具：
-{"think": "思考过程", "tool": "工具名", "params": {"参数": "值"}}
+{{"think": "思考过程", "tool": "工具名", "params": {{"参数": "值"}}}}
 
 给出结论：
-{"think": "思考过程", "answer": "最终回答(Markdown)"}
+{{"think": "思考过程", "answer": "最终回答(Markdown)"}}
 
 ## 规则
 

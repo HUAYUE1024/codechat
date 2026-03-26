@@ -152,15 +152,14 @@ class VectorStore:
 
         # Save original env vars to restore after loading
         _saved_env = {}
-        _ssl_vars = ("HF_HUB_DISABLE_SSL_VERIFICATION", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE")
+        _ssl_vars = ("CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE")
         for k in _ssl_vars:
             _saved_env[k] = os.environ.get(k)
 
         # HuggingFace mirror for China users
         if "HF_ENDPOINT" not in os.environ:
             os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
-        # Temporarily disable SSL only for HuggingFace model download
-        os.environ["HF_HUB_DISABLE_SSL_VERIFICATION"] = "1"
+            
         warnings.filterwarnings("ignore", message=".*UNEXPECTED.*")
 
         # Filter stderr: keep progress bars, suppress LOAD REPORT noise

@@ -108,25 +108,13 @@ def _get_language(lang_name: str):
 
 # Pre-import tree_sitter_languages with SSL bypass
 def _safe_import_tree_sitter():
-    import os
-    import ssl
-    _saved = {}
-    for k in ("HF_HUB_DISABLE_SSL_VERIFICATION", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE"):
-        _saved[k] = os.environ.get(k)
-    os.environ["HF_HUB_DISABLE_SSL_VERIFICATION"] = "1"
-    _orig_ctx = ssl._create_default_https_context
-    ssl._create_default_https_context = ssl._create_unverified_context
+    """Attempt to import tree-sitter, avoiding SSL issues."""
     try:
-        import tree_sitter_languages  # noqa: F401
-    except Exception:
-        pass
-    finally:
-        ssl._create_default_https_context = _orig_ctx
-        for k, v in _saved.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
+        import tree_sitter
+        import tree_sitter_languages
+        return tree_sitter, tree_sitter_languages
+    except ImportError:
+        return None, None
 
 _safe_import_tree_sitter()
 

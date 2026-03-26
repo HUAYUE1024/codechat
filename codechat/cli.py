@@ -462,6 +462,9 @@ def chat(path: str | None, context: int, model: str | None):
         if result["answer"] and not result["answer"].startswith("No LLM configured"):
             conversation_history.append({"role": "user", "content": q})
             conversation_history.append({"role": "assistant", "content": result["answer"]})
+            # Keep only the last 20 messages (10 turns) to prevent file from growing infinitely
+            if len(conversation_history) > 20:
+                conversation_history = conversation_history[-20:]
             _save_history()
 
         if result["sources"]:

@@ -850,7 +850,7 @@ class CodeAgent:
             self.memory_st.add("agent", f"Think: {think}")
 
             # Check for final answer
-            if "answer" in parsed:
+            if "answer" in parsed and "tool" not in parsed:
                 answer = parsed["answer"]
                 break
 
@@ -906,6 +906,8 @@ class CodeAgent:
     def _parse_json(self, raw: str) -> dict:
         """Extract JSON from LLM response."""
         text = raw.strip()
+        
+        # 1. Try to extract from markdown code blocks
         if "```json" in text:
             m = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL)
             if m:
@@ -914,12 +916,52 @@ class CodeAgent:
             m = re.search(r"```\s*(.*?)\s*```", text, re.DOTALL)
             if m:
                 text = m.group(1)
-        m = re.search(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}", text, re.DOTALL)
-        if m:
+                
+        # 2. Find the first '{' and last '}' to handle potential prefix/suffix text
+        start_idx = text.find('{')
+        end_idx = text.rfind('}')
+        
+        if start_idx != -1 and end_idx != -1 and end_idx >= start_idx:
+            json_str = text[start_idx:end_idx + 1]
             try:
-                return json.loads(m.group(0))
+                # Handle potential escaped quotes or newlines that break standard JSON parser
+                # Using json.loads directly first
+                return json.loads(json_str)
             except json.JSONDecodeError:
-                pass
+                # Fallback 1: try strict mode or fix common issues like unescaped newlines in strings
+                try:
+                    import ast
+                    # ast.literal_eval can parse some invalid JSONs that are valid Python dicts
+                    parsed = ast.literal_eval(json_str)
+                    if isinstance(parsed, dict):
+                        return parsed
+                except Exception:
+                    pass
+                
+                # Fallback 2: Regex extraction for tool parameters when JSON is badly broken by unescaped quotes
+                # Especially common when LLM outputs Python code inside a JSON string
+                if '"tool"' in json_str or "'tool'" in json_str:
+                    tool_match = re.search(r'["\']tool["\']\s*:\s*["\']([^"\']+)["\']', json_str)
+                    if tool_match:
+                        tool_name = tool_match.group(1)
+                        # Try to extract params
+                        params = {}
+                        if tool_name == "search_replace":
+                            path_m = re.search(r'["\']path["\']\s*:\s*["\']([^"\']+)["\']', json_str)
+                            old_m = re.search(r'["\']old_str["\']\s*:\s*["\'](.*?)["\']\s*,\s*["\']new_str["\']', json_str, re.DOTALL)
+                            new_m = re.search(r'["\']new_str["\']\s*:\s*["\'](.*?)["\']\s*\}', json_str, re.DOTALL)
+                            if path_m: params["path"] = path_m.group(1)
+                            if old_m: params["old_str"] = old_m.group(1).replace('\\n', '\n').replace('\\"', '"')
+                            if new_m: params["new_str"] = new_m.group(1).replace('\\n', '\n').replace('\\"', '"')
+                        elif tool_name == "write_file":
+                            path_m = re.search(r'["\']path["\']\s*:\s*["\']([^"\']+)["\']', json_str)
+                            content_m = re.search(r'["\']content["\']\s*:\s*["\'](.*)["\']\s*\}', json_str, re.DOTALL)
+                            if path_m: params["path"] = path_m.group(1)
+                            if content_m: params["content"] = content_m.group(1).replace('\\n', '\n').replace('\\"', '"')
+                        
+                        if params:
+                            return {"think": "Regex extracted due to broken JSON", "tool": tool_name, "params": params}
+                            
         return {"think": "parse failed", "answer": text}
 
     def reset_memory(self):

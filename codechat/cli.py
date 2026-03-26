@@ -432,20 +432,24 @@ def chat(path: str | None, context: int, model: str | None):
             is_answer = False
             
             markdown_content = ""
+            think_buf: list[str] = []
             
             with Live(Markdown(""), console=console, refresh_per_second=10) as live:
                 def _on_think(t: str):
                     nonlocal is_answer
                     if not is_answer and t.strip():
-                        # Live cannot easily mix raw text and Markdown, so we handle thinking normally
-                        # but in Live context we just update the live display
-                        pass
+                        think_buf.append(t)
+                        # Optional: Could update live with thinking tokens if desired
+                        # but simple buffering might be safer for rendering
 
                 def _on_answer(t: str):
                     nonlocal is_answer, markdown_content
                     if not is_answer:
                         is_answer = True
                         if thinking:
+                            # Print thinking buf before answer starts
+                            if think_buf:
+                                console.print(f"[dim]{''.join(think_buf)}[/]")
                             console.print("[dim]=== Answer ===[/]")
                     
                     markdown_content += t

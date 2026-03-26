@@ -157,13 +157,18 @@ def _call_llm(prompt: str, model: str | None = None, _system_override: str | Non
         try:
             import openai
             client = openai.OpenAI(api_key=api_key, base_url=base_url)
-            resp = client.chat.completions.create(
-                model=llm_model,
-                messages=messages,
-                temperature=0.1,
-                max_tokens=4096,
-                extra_body={"enable_thinking": thinking} if thinking else {},
-            )
+            
+            # Conditionally set extra_body instead of passing empty dict when not needed
+            kwargs = {
+                "model": llm_model,
+                "messages": messages,
+                "temperature": 0.1,
+                "max_tokens": 4096,
+            }
+            if thinking:
+                kwargs["extra_body"] = {"enable_thinking": True}
+                
+            resp = client.chat.completions.create(**kwargs)
             return resp.choices[0].message.content or ""
         except Exception as e:
             if attempt < max_retries - 1:
@@ -243,14 +248,18 @@ def stream_llm(
         try:
             import openai
             client = openai.OpenAI(api_key=api_key, base_url=base_url)
-            stream = client.chat.completions.create(
-                model=llm_model,
-                messages=messages,
-                temperature=0.1,
-                max_tokens=4096,
-                stream=True,
-                extra_body={"enable_thinking": thinking} if thinking else {},
-            )
+            
+            kwargs = {
+                "model": llm_model,
+                "messages": messages,
+                "temperature": 0.1,
+                "max_tokens": 4096,
+                "stream": True,
+            }
+            if thinking:
+                kwargs["extra_body"] = {"enable_thinking": True}
+                
+            stream = client.chat.completions.create(**kwargs)
             answer_parts: list[str] = []
             is_answering = False
             for chunk in stream:

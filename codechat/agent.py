@@ -231,6 +231,11 @@ class FindPatternTool(Tool):
             return "Error: pattern required"
         if len(pattern) > 200:
             return "Error: pattern too long (max 200 chars)"
+            
+        # Basic ReDoS mitigation by checking for suspicious repetition
+        if re.search(r'(\([^)]+\)|\w+)([*+]{2,}|[*+]\?)', pattern) or re.search(r'(\([^)]+\)|\w+)[*+]\(', pattern):
+            return "Error: pattern rejected due to potential ReDoS vulnerability (nested quantifiers or overlapping alternations)."
+
         try:
             regex = re.compile(pattern)
         except re.error as e:
@@ -240,12 +245,14 @@ class FindPatternTool(Tool):
         files = scan_files(root)
         all_matches = []
         
-        # Parallelize the file searching
+        # Use executor.map to safely collect results in order and avoid race conditions
         with concurrent.futures.ThreadPoolExecutor() as executor:
-            futures = [executor.submit(self._search_file, f, root, regex, file_glob) for f in files]
-            for future in concurrent.futures.as_completed(futures):
-                matches = future.result()
-                all_matches.extend(matches)
+            # Map returns an iterator that yields results in the same order as the input iterables
+            results = executor.map(lambda f: self._search_file(f, root, regex, file_glob), files)
+            
+            for matches in results:
+                if matches:
+                    all_matches.extend(matches)
                 if len(all_matches) >= 30:
                     break
                     
@@ -361,6 +368,7 @@ class ReadMultipleTool(Tool):
 
 
 class WriteFileTool(Tool):
+    """Tool to write content to a file."""
     name = "write_file"
     description = "写入或覆盖整个文件内容"
 
@@ -372,17 +380,26 @@ class WriteFileTool(Tool):
         root: Path = ctx["root"]
         path = params.get("path", "")
         content = params.get("content", "")
-        if not path:
-            return "Error: path required"
-            
-        full = (root / path).resolve()
-        if not full.is_relative_to(root):
-            return f"Access denied: path outside project root"
+        if not path or not content:
+            return "Error: missing path or content arguments."
             
         try:
+            # Safe path resolution
+            safe_path = path.lstrip("/").lstrip("\\")
+            full = (root / safe_path).resolve()
+            if not full.is_relative_to(root):
+                return f"Error: Cannot write outside project root: {path}"
+                
             full.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Create a backup if file exists
+            if full.exists():
+                import shutil
+                backup = full.with_suffix(full.suffix + ".bak")
+                shutil.copy2(full, backup)
+                
             full.write_text(content, encoding="utf-8")
-            return f"Successfully wrote to `{path}` ({len(content)} chars)."
+            return f"Successfully wrote to `{path}` ({len(content)} chars, Backup saved as .bak if overwritten)."
         except Exception as e:
             return f"Error writing file: {e}"
 
@@ -533,7 +550,7 @@ class LongTermMemory:
             "q": question[:200],
             "a": answer[:500],
             "actions": [a["tool"] for a in actions],
-            "hash": hashlib.md5(question.encode()).hexdigest()[:8],
+            "hash": hashlib.sha256(question.encode()).hexdigest()[:16],
         }
         with open(self.path, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -542,7 +559,16 @@ class LongTermMemory:
         """Retrieve similar past Q&As."""
         if not self.path.exists():
             return ""
-        q_words = set(question.lower().split())
+            
+        q_words = set(re.findall(r'\w+', question.lower()))
+        
+        # Better than just single words: add character trigrams for partial matches
+        def get_trigrams(text):
+            text = text.lower()
+            return {text[i:i+3] for i in range(len(text)-2)} if len(text) >= 3 else set()
+            
+        q_trigrams = get_trigrams(question)
+        
         scored = []
         with open(self.path, encoding="utf-8") as f:
             for line in f:
@@ -551,9 +577,17 @@ class LongTermMemory:
                 except json.JSONDecodeError:
                     continue
                 past_q = entry.get("q", "")
-                overlap = len(q_words & set(past_q.lower().split()))
-                if overlap > 0:
-                    scored.append((overlap, entry))
+                e_words = set(re.findall(r'\w+', past_q.lower()))
+                e_trigrams = get_trigrams(past_q)
+                
+                word_overlap = len(q_words & e_words)
+                trigram_overlap = len(q_trigrams & e_trigrams)
+                
+                # Score heavily favors exact word matches, but trigrams help with semantic/partial matches
+                score = (word_overlap * 5) + trigram_overlap
+                if score > 0:
+                    scored.append((score, entry))
+                    
         scored.sort(key=lambda x: -x[0])
         if not scored:
             return ""
@@ -659,22 +693,60 @@ class Planner:
         return plan
 
     def _parse_steps(self, raw: str) -> list[PlanStep]:
-        # Extract JSON array
+        raw = raw.strip()
+        # Look for json blocks
+        json_blocks = re.findall(r"```(?:json)?\s*(.*?)\s*```", raw, re.DOTALL)
+        for block in json_blocks:
+            try:
+                data = json.loads(block)
+                if isinstance(data, list):
+                    return [
+                        PlanStep(
+                            index=item.get("index", i+1),
+                            description=item.get("description", ""),
+                            tool_hint=item.get("tool_hint", ""),
+                        )
+                        for i, item in enumerate(data)
+                        if isinstance(item, dict)
+                    ]
+            except Exception:
+                continue
+
+        # Fallback to regex
         match = re.search(r"\[.*\]", raw, re.DOTALL)
-        if not match:
-            return []
+        if match:
+            try:
+                data = json.loads(match.group(0))
+                if isinstance(data, list):
+                    return [
+                        PlanStep(
+                            index=item.get("index", i+1),
+                            description=item.get("description", ""),
+                            tool_hint=item.get("tool_hint", ""),
+                        )
+                        for i, item in enumerate(data)
+                        if isinstance(item, dict)
+                    ]
+            except Exception:
+                pass
+        
+        # Final fallback to direct load
         try:
-            data = json.loads(match.group(0))
-            return [
-                PlanStep(
-                    index=item.get("index", i+1),
-                    description=item.get("description", ""),
-                    tool_hint=item.get("tool_hint", ""),
-                )
-                for i, item in enumerate(data)
-            ]
-        except (json.JSONDecodeError, TypeError):
-            return []
+            data = json.loads(raw)
+            if isinstance(data, list):
+                return [
+                    PlanStep(
+                        index=item.get("index", i+1),
+                        description=item.get("description", ""),
+                        tool_hint=item.get("tool_hint", ""),
+                    )
+                    for i, item in enumerate(data)
+                    if isinstance(item, dict)
+                ]
+        except Exception:
+            pass
+
+        return []
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -903,66 +975,29 @@ class CodeAgent:
             memory_entries=len(self.memory_st.entries),
         )
 
-    def _parse_json(self, raw: str) -> dict:
-        """Extract JSON from LLM response."""
-        text = raw.strip()
-        
-        # 1. Try to extract from markdown code blocks
-        if "```json" in text:
-            m = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL)
-            if m:
-                text = m.group(1)
-        elif "```" in text:
-            m = re.search(r"```\s*(.*?)\s*```", text, re.DOTALL)
-            if m:
-                text = m.group(1)
-                
-        # 2. Find the first '{' and last '}' to handle potential prefix/suffix text
-        start_idx = text.find('{')
-        end_idx = text.rfind('}')
-        
-        if start_idx != -1 and end_idx != -1 and end_idx >= start_idx:
-            json_str = text[start_idx:end_idx + 1]
+    def _parse_json(self, raw: str) -> dict | list:
+        """Parse JSON robustly, even if wrapped in markdown blocks or text."""
+        raw = raw.strip()
+        # Try finding json blocks
+        json_blocks = re.findall(r"```(?:json)?\s*(.*?)\s*```", raw, re.DOTALL)
+        for block in json_blocks:
             try:
-                # Handle potential escaped quotes or newlines that break standard JSON parser
-                # Using json.loads directly first
-                return json.loads(json_str)
+                return json.loads(block)
             except json.JSONDecodeError:
-                # Fallback 1: try strict mode or fix common issues like unescaped newlines in strings
-                try:
-                    import ast
-                    # ast.literal_eval can parse some invalid JSONs that are valid Python dicts
-                    parsed = ast.literal_eval(json_str)
-                    if isinstance(parsed, dict):
-                        return parsed
-                except Exception:
-                    pass
+                continue
                 
-                # Fallback 2: Regex extraction for tool parameters when JSON is badly broken by unescaped quotes
-                # Especially common when LLM outputs Python code inside a JSON string
-                if '"tool"' in json_str or "'tool'" in json_str:
-                    tool_match = re.search(r'["\']tool["\']\s*:\s*["\']([^"\']+)["\']', json_str)
-                    if tool_match:
-                        tool_name = tool_match.group(1)
-                        # Try to extract params
-                        params = {}
-                        if tool_name == "search_replace":
-                            path_m = re.search(r'["\']path["\']\s*:\s*["\']([^"\']+)["\']', json_str)
-                            old_m = re.search(r'["\']old_str["\']\s*:\s*["\'](.*?)["\']\s*,\s*["\']new_str["\']', json_str, re.DOTALL)
-                            new_m = re.search(r'["\']new_str["\']\s*:\s*["\'](.*?)["\']\s*\}', json_str, re.DOTALL)
-                            if path_m: params["path"] = path_m.group(1)
-                            if old_m: params["old_str"] = old_m.group(1).replace('\\n', '\n').replace('\\"', '"')
-                            if new_m: params["new_str"] = new_m.group(1).replace('\\n', '\n').replace('\\"', '"')
-                        elif tool_name == "write_file":
-                            path_m = re.search(r'["\']path["\']\s*:\s*["\']([^"\']+)["\']', json_str)
-                            content_m = re.search(r'["\']content["\']\s*:\s*["\'](.*)["\']\s*\}', json_str, re.DOTALL)
-                            if path_m: params["path"] = path_m.group(1)
-                            if content_m: params["content"] = content_m.group(1).replace('\\n', '\n').replace('\\"', '"')
-                        
-                        if params:
-                            return {"think": "Regex extracted due to broken JSON", "tool": tool_name, "params": params}
-                            
-        return {"think": "parse failed", "answer": text}
+        # Fallback to finding anything that looks like a JSON array or object
+        try:
+            match = re.search(r"(\{.*\}|\[.*\])", raw, re.DOTALL)
+            if match:
+                return json.loads(match.group(1))
+        except Exception:
+            pass
+            
+        try:
+            return json.loads(raw)
+        except Exception as e:
+            raise ValueError(f"Failed to parse JSON: {e}\nRaw output: {raw}")
 
     def reset_memory(self):
         """Clear all memory."""

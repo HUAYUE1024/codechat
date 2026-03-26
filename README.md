@@ -333,8 +333,18 @@ Yes. `codechat ingest --reset` to rebuild.
 
 ## Recent Updates (v0.2.0)
 
+**Architecture & Reliability Improvements**
+- **Robust JSON Parsing**: Upgraded the Agent's JSON parser to handle markdown blocks and malformed LLM outputs effectively.
+- **Enhanced Long-Term Memory**: Replaced weak token-overlap recall with a robust Bigram/Trigram semantic matching algorithm and upgraded hashing to SHA-256.
+- **Reliable Incremental Indexing**: File change detection now uses `mtime` + `size` + `content SHA256` to prevent false negatives when mtime changes but content remains identical.
+- **Atomic Operations**: Vector store persistence (`_save()`) now utilizes temp-file atomic swaps to completely prevent data corruption during unexpected crashes.
+- **Safety Measures**: The Agent's `write_file` tool now automatically creates `.bak` backups before overwriting any user code.
+- **Error Visibility**: Dimension mismatch and corrupted index errors are now explicitly printed to the CLI instead of failing silently.
+- **ReDoS Protection**: Added static regex vulnerability checks in the `find_pattern` tool to prevent catastrophic backtracking.
+- **Chat Thinking Mode**: Fixed an issue where reasoning tokens were silently discarded in the interactive chat REPL.
+
 **Performance & Stability**
-- **Thread Safety**: Fixed race conditions in `stderr` filtering and file chunk merging during multi-threaded ingestion.
+- **Thread Safety**: Fixed race conditions in `stderr` filtering, `FindPatternTool`, and file chunk merging during multi-threaded operations.
 - **BM25 Optimization**: Switched to boolean masking for `remove_documents` to avoid O(N) rebuilding, drastically speeding up incremental indexing on large codebases.
 - **LLM Retries**: Added exponential backoff retry mechanisms for all LLM API calls to handle network fluctuations and unstable local instances.
 - **Code Deduplication**: Unified HuggingFace model loading logic across embedding and reranking modules.

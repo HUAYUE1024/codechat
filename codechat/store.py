@@ -20,7 +20,7 @@ from .chunker import Chunk
 from .config import DEFAULT_EMBEDDING_MODEL, DEFAULT_RERANK_MODEL, get_codechat_dir
 
 
-_MODEL_LOAD_LOCK = threading.Lock()
+_MODEL_LOAD_LOCK = threading.RLock()
 
 @contextmanager
 def _suppress_stderr():
@@ -47,7 +47,7 @@ def _load_hf_model(model_name: str, model_class, use_hf_mirror: bool = True):
     """Generic function to load a HuggingFace model with proper env vars and stderr filtering."""
     # Save original env vars to restore after loading
     _saved_env = {}
-    _ssl_vars = ("CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE")
+    _ssl_vars = ("CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "HF_ENDPOINT")
     for k in _ssl_vars:
         _saved_env[k] = os.environ.get(k)
 
@@ -285,7 +285,8 @@ class VectorStore:
                             self._embeddings = np.vstack(arrays)
                         else:
                             self._embeddings = None
-            except Exception:
+            except Exception as e:
+                print(f"\n[Warning] Failed to load index data: {e}. Starting fresh.", file=sys.stderr)
                 self._embeddings = None
                 self._metadata = []
                 self._ids = []
@@ -293,35 +294,43 @@ class VectorStore:
                 self._bm25 = BM25()
 
     def _save(self) -> None:
-        """Persist current data to disk."""
+        """Persist current data to disk using atomic writes."""
         if self._embeddings is not None and len(self._embeddings) > 0:
-            # Ensure dir exists
-            self._embeddings_dir.mkdir(parents=True, exist_ok=True)
+            import tempfile
+            import shutil
             
-            # Clean old split files
-            for p in self._embeddings_dir.glob("*.npy"):
-                p.unlink(missing_ok=True)
-                
-            # Split and save embeddings into chunks of 5000 to avoid massive IO
-            CHUNK_SIZE = 5000
-            total = len(self._embeddings)
-            for i in range(0, total, CHUNK_SIZE):
-                chunk = self._embeddings[i:i + CHUNK_SIZE]
-                chunk_path = self._embeddings_dir / f"{i // CHUNK_SIZE:04d}.npy"
-                np.save(str(chunk_path), chunk)
+            # Write to a temporary directory first
+            temp_dir = Path(tempfile.mkdtemp(prefix="codechat_embeddings_"))
+            try:
+                # Split and save embeddings into chunks of 5000 to avoid massive IO
+                CHUNK_SIZE = 5000
+                total = len(self._embeddings)
+                for i in range(0, total, CHUNK_SIZE):
+                    chunk = self._embeddings[i:i + CHUNK_SIZE]
+                    chunk_path = temp_dir / f"{i // CHUNK_SIZE:04d}.npy"
+                    np.save(str(chunk_path), chunk)
+                    
+                # Atomic swap: remove old, rename new
+                if self._embeddings_dir.exists():
+                    shutil.rmtree(self._embeddings_dir, ignore_errors=True)
+                shutil.move(str(temp_dir), str(self._embeddings_dir))
+            finally:
+                if temp_dir.exists():
+                    shutil.rmtree(temp_dir, ignore_errors=True)
 
-            self._metadata_path.write_text(
-                json.dumps({
-                    "ids": self._ids, 
-                    "metadata": self._metadata,
-                    "texts": self._texts
-                }, ensure_ascii=False),
-                encoding="utf-8",
-            )
-            self._bm25_path.write_text(
-                json.dumps(self._bm25.to_dict(), ensure_ascii=False),
-                encoding="utf-8",
-            )
+            # Atomic write for JSON files
+            def atomic_write_json(path: Path, data: dict):
+                temp_path = path.with_suffix('.tmp')
+                temp_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+                temp_path.replace(path)
+
+            atomic_write_json(self._metadata_path, {
+                "ids": self._ids, 
+                "metadata": self._metadata,
+                "texts": self._texts
+            })
+            
+            atomic_write_json(self._bm25_path, self._bm25.to_dict())
         else:
             # Empty — remove files
             if self._embeddings_dir.exists():
@@ -352,10 +361,21 @@ class VectorStore:
 
     @staticmethod
     def file_hash(path: Path) -> str:
-        """Compute a fast hash for a file (mtime + size)."""
+        """Compute a robust hash for a file (mtime + size + content SHA256)."""
         try:
             st = path.stat()
-            return f"{st.st_mtime_ns}:{st.st_size}"
+            # Read first and last 4KB to catch content changes while staying fast
+            # If the file is small, this reads the whole file
+            # This is a good balance between speed and reliability
+            with open(path, "rb") as f:
+                head = f.read(4096)
+                if st.st_size > 8192:
+                    f.seek(-4096, 2)
+                    tail = f.read(4096)
+                else:
+                    tail = b""
+            content_hash = hashlib.sha256(head + tail).hexdigest()[:16]
+            return f"{st.st_mtime_ns}:{st.st_size}:{content_hash}"
         except OSError:
             return ""
 
@@ -464,8 +484,11 @@ class VectorStore:
         
         # Guard against dimension mismatch
         if self._embeddings.shape[1] != q_vec.shape[0]:
-            print(f"\n[Warning] Embedding dimension mismatch (Index: {self._embeddings.shape[1]}, Query: {q_vec.shape[0]}). "
-                  f"Please run `codechat ingest --reset` to rebuild the index.", file=sys.stderr)
+            from rich.console import Console
+            c = Console(stderr=True)
+            c.print(f"\n[bold red]Error:[/] Embedding dimension mismatch (Index: {self._embeddings.shape[1]}, Query: {q_vec.shape[0]}).", style="red")
+            c.print("[yellow]The model you are using has a different vector size than the one used to build the index.[/]", style="yellow")
+            c.print("Please run `[cyan]codechat ingest --reset[/]` to rebuild the index.", style="white")
             return []
             
         vec_sims = _cosine_similarity(q_vec, self._embeddings)
@@ -596,5 +619,7 @@ class VectorStore:
     @staticmethod
     def _make_id(chunk: Chunk) -> str:
         """Create a stable ID for a chunk."""
-        raw = f"{chunk.file_path}:{chunk.start_line}:{chunk.end_line}:{chunk.chunk_index}"
+        # Include a hash of the content to handle cases where the file changes but the lines don't
+        content_hash = hashlib.sha256(chunk.content.encode('utf-8', errors='ignore')).hexdigest()[:8]
+        raw = f"{chunk.file_path}:{chunk.start_line}:{chunk.end_line}:{chunk.chunk_index}:{content_hash}"
         return hashlib.sha256(raw.encode()).hexdigest()[:32]

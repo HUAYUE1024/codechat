@@ -49,7 +49,59 @@ def _find_project_root() -> Path:
     return cwd
 
 
-@click.group()
+class _ColoredGroup(click.Group):
+    """Click group with colored help output."""
+
+    def format_help(self, ctx, formatter):
+        # Header
+        formatter.write("\n")
+        formatter.write("\x1b[1;36m  codechat\x1b[0m — \x1b[3mLocal RAG codebase Q&A engine\x1b[0m\n")
+        formatter.write("\n")
+        formatter.write("\x1b[90m  Usage: codechat [OPTIONS] COMMAND [ARGS]...\x1b[0m\n")
+        formatter.write("\n")
+
+        # Options
+        formatter.write("\x1b[1;33m  Options:\x1b[0m\n")
+        formatter.write("    \x1b[32m--version\x1b[0m    Show version\n")
+        formatter.write("    \x1b[32m--help\x1b[0m       Show this help\n")
+        formatter.write("\n")
+
+        # Commands grouped by category
+        commands = list(self.commands.items())
+
+        categories = {
+            "\x1b[1;35m  Core:\x1b[0m": [
+                ("ingest",       "Build vector index (incremental)"),
+                ("ask",          "Ask questions about the codebase"),
+                ("chat",         "Interactive REPL with memory"),
+                ("status",       "Show index status"),
+                ("clean",        "Delete the index"),
+            ],
+            "\x1b[1;34m  Agent:\x1b[0m": [
+                ("agent",        "Multi-step: Plan → Tools → Memory → Answer"),
+            ],
+            "\x1b[1;33m  Skills:\x1b[0m": [
+                ("explain",      "Explain a function/class/file"),
+                ("review",       "Code review (bugs, security, perf)"),
+                ("find",         "Search code patterns (regex)"),
+                ("summary",      "Architecture overview"),
+                ("trace",        "Trace function call chain"),
+                ("compare",      "Compare two files"),
+                ("test-suggest", "Suggest test cases"),
+                ("tree",         "Project structure tree"),
+            ],
+        }
+
+        for cat_name, cmds in categories.items():
+            formatter.write(f"{cat_name}\n")
+            for cmd_name, desc in cmds:
+                formatter.write(f"    \x1b[1m{cmd_name:<16}\x1b[0m{desc}\n")
+            formatter.write("\n")
+
+        formatter.write("\x1b[90m  More: codechat COMMAND --help\x1b[0m\n\n")
+
+
+@click.group(cls=_ColoredGroup)
 @click.version_option(__version__, prog_name="codechat")
 def cli():
     """codechat - Chat with your codebase using local RAG."""

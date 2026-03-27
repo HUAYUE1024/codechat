@@ -532,6 +532,134 @@ class DeleteFileTool(Tool):
             return f"Error deleting: {e}"
 
 
+class ShellTool(Tool):
+    """Execute shell commands."""
+    name = "shell"
+    description = "执行终端命令（cmd/bash），如查看git状态、运行测试、安装依赖等"
+
+    @property
+    def parameters(self):
+        return {"command": "要执行的命令", "cwd": "工作目录(可选,默认项目根目录)"}
+
+    def run(self, params: dict, ctx: dict) -> str:
+        import subprocess
+        root: Path = ctx["root"]
+        cmd = params.get("command", "")
+        cwd = params.get("cwd", "")
+        if not cmd:
+            return "Error: command required"
+
+        # Safety: block dangerous commands
+        _blocked = ("rm -rf /", "format", "del /f /s", "shutdown", "mkfs", "dd if=")
+        cmd_lower = cmd.lower()
+        for b in _blocked:
+            if b in cmd_lower:
+                return f"Error: blocked dangerous command: {cmd}"
+
+        work_dir = (root / cwd).resolve() if cwd else root
+        if not work_dir.is_relative_to(root) and work_dir != root:
+            return f"Error: cwd outside project root"
+
+        try:
+            result = subprocess.run(
+                cmd, shell=True, cwd=str(work_dir),
+                capture_output=True, text=True, timeout=30,
+                encoding="utf-8", errors="replace",
+            )
+            output = result.stdout + result.stderr
+            # Truncate long output
+            if len(output) > 5000:
+                output = output[:5000] + f"\n... [truncated, total {len(output)} chars]"
+            exit_info = f"[exit code: {result.returncode}]" if result.returncode != 0 else ""
+            return f"{output}{exit_info}" if output else f"(no output) {exit_info}"
+        except subprocess.TimeoutExpired:
+            return "Error: command timed out (30s limit)"
+        except Exception as e:
+            return f"Error: {type(e).__name__}: {e}"
+
+
+class GitTool(Tool):
+    """Git operations."""
+    name = "git"
+    description = "Git操作：status、log、diff、blame等"
+
+    @property
+    def parameters(self):
+        return {"args": "git参数，如 'status' 'log --oneline -10' 'diff HEAD~1'"}
+
+    def run(self, params: dict, ctx: dict) -> str:
+        import subprocess
+        root: Path = ctx["root"]
+        args = params.get("args", "")
+        if not args:
+            return "Error: args required"
+
+        # Only allow safe git commands
+        _allowed = ("status", "log", "diff", "blame", "show", "branch", "remote",
+                     "stash", "reflog", "tag", "ls-files", "grep")
+        first_arg = args.split()[0] if args.split() else ""
+        if first_arg not in _allowed:
+            return f"Error: '{first_arg}' not allowed. Allowed: {', '.join(_allowed)}"
+
+        try:
+            result = subprocess.run(
+                f"git {args}", shell=True, cwd=str(root),
+                capture_output=True, text=True, timeout=15,
+                encoding="utf-8", errors="replace",
+            )
+            output = result.stdout + result.stderr
+            if len(output) > 5000:
+                output = output[:5000] + "\n... [truncated]"
+            return output if output else "(no output)"
+        except subprocess.TimeoutExpired:
+            return "Error: git command timed out"
+        except Exception as e:
+            return f"Error: {type(e).__name__}: {e}"
+
+
+class PythonRunTool(Tool):
+    """Run Python code snippets."""
+    name = "python_run"
+    description = "执行Python代码片段，用于验证逻辑、测试表达式等"
+
+    @property
+    def parameters(self):
+        return {"code": "Python代码"}
+
+    def run(self, params: dict, ctx: dict) -> str:
+        import subprocess
+        import tempfile
+        root: Path = ctx["root"]
+        code = params.get("code", "")
+        if not code:
+            return "Error: code required"
+
+        # Safety: block dangerous imports
+        _blocked = ("os.system", "subprocess", "shutil.rmtree", "eval(",
+                     "exec(", "__import__", "importlib", "ctypes")
+        for b in _blocked:
+            if b in code:
+                return f"Error: blocked potentially dangerous code containing '{b}'"
+
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, encoding="utf-8") as f:
+                f.write(code)
+                f.flush()
+                result = subprocess.run(
+                    ["python", f.name], cwd=str(root),
+                    capture_output=True, text=True, timeout=15,
+                    encoding="utf-8", errors="replace",
+                )
+            output = result.stdout + result.stderr
+            if len(output) > 3000:
+                output = output[:3000] + "\n... [truncated]"
+            return output if output else "(no output)"
+        except subprocess.TimeoutExpired:
+            return "Error: code execution timed out (15s)"
+        except Exception as e:
+            return f"Error: {type(e).__name__}: {e}"
+
+
 def build_default_registry() -> ToolRegistry:
     reg = ToolRegistry()
     reg.register(SearchTool())
@@ -542,6 +670,9 @@ def build_default_registry() -> ToolRegistry:
     reg.register(WriteFileTool())
     reg.register(SearchReplaceTool())
     reg.register(DeleteFileTool())
+    reg.register(ShellTool())
+    reg.register(GitTool())
+    reg.register(PythonRunTool())
     return reg
 
 

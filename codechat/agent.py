@@ -975,6 +975,9 @@ class ActionExecutor:
 AGENT_SYSTEM = """\
 你是一个强大的代码 Agent，通过工具查找、分析并修改代码。
 
+当前操作系统: {platform}
+使用 shell 工具时请使用对应平台的命令语法（Windows用cmd命令，Linux/Mac用bash命令）。
+
 ## 输出格式（每次回复必须是 JSON）
 
 调用工具：
@@ -1078,7 +1081,8 @@ class CodeAgent:
         
         while step < _max:
             # Build prompt
-            system = AGENT_SYSTEM.format(max_steps=_max)
+            _platform = sys.platform  # win32 / linux / darwin
+            system = AGENT_SYSTEM.format(max_steps=_max, platform=_platform)
             tools_desc = self.tools.list_definitions()
             mem_ctx = self.memory_st.get_context()
 

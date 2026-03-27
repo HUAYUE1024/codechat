@@ -68,6 +68,9 @@ from rich.table import Table
 from rich.syntax import Syntax
 
 from . import __version__
+
+# Restore stderr after imports
+_suppress_c_stderr_end()
 from .chunker import chunk_file
 from .config import get_codechat_dir, load_config, save_config, DEFAULT_EMBEDDING_MODEL
 from .rag import answer_question, answer_question_stream, _get_llm_config

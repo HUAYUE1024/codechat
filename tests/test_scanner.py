@@ -42,8 +42,8 @@ def test_scan_skips_dirs(tmp_path):
     (tmp_path / "node_modules" / "pkg.js").write_text("module.exports={}", encoding="utf-8")
     (tmp_path / "__pycache__").mkdir()
     (tmp_path / "__pycache__" / "mod.cpython-312.pyc").write_bytes(b"\x00")
-    (tmp_path / ".codechat").mkdir()
-    (tmp_path / ".codechat" / "data.json").write_text("{}", encoding="utf-8")
+    (tmp_path / ".snowcode").mkdir()
+    (tmp_path / ".snowcode" / "data.json").write_text("{}", encoding="utf-8")
     (tmp_path / "main.py").write_text("print('hi')", encoding="utf-8")
 
     files = scan_files(tmp_path)

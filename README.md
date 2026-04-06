@@ -1,6 +1,6 @@
 <div align="center">
 
-# codechat
+# Snowcode
 
 **A Local RAG-Powered Code Intelligence Engine for Terminal Environments**
 
@@ -17,7 +17,7 @@
 
 ## Abstract
 
-**codechat** is a privacy-first, fully-local code intelligence engine that enables developers to query, analyze, and modify codebases through natural language in a terminal environment. Unlike cloud-based alternatives (GitHub Copilot, Cursor), codechat performs all embedding, indexing, and retrieval operations locally, with only optional LLM calls leaving the machine. The system employs a hybrid retrieval architecture combining dense vector similarity (sentence-transformers) with sparse keyword matching (BM25), reranked by a cross-encoder, and orchestrated through a ReAct agent with planning, memory, and 8 specialized tools supporting full CRUD operations.
+**Snowcode** is a privacy-first, fully-local code intelligence engine that enables developers to query, analyze, and modify codebases through natural language in a terminal environment. Unlike cloud-based alternatives (GitHub Copilot, Cursor), codechat performs all embedding, indexing, and retrieval operations locally, with only optional LLM calls leaving the machine. The system employs a hybrid retrieval architecture combining dense vector similarity (sentence-transformers) with sparse keyword matching (BM25), reranked by a cross-encoder, and orchestrated through a ReAct agent with planning, memory, and 8 specialized tools supporting full CRUD operations.
 
 ## Key Contributions
 
@@ -83,7 +83,7 @@
 
 ### 1. Code-Aware Indexing Pipeline
 
-**File Discovery** (`scanner.py`): Recursively traverses the project using `os.walk` with in-place directory pruning. Respects both `.gitignore` and `.codechatignore` patterns via the `pathspec` library. Skips 14 categories of non-source directories (`.git`, `node_modules`, `__pycache__`, `.venv`, etc.) and enforces a 1MB file size limit.
+**File Discovery** (`scanner.py`): Recursively traverses the project using `os.walk` with in-place directory pruning. Respects both `.gitignore` and `.snowcodeignore` patterns via the `pathspec` library. Skips 14 categories of non-source directories (`.git`, `node_modules`, `__pycache__`, `.venv`, etc.) and enforces a 1MB file size limit.
 
 **Semantic Chunking** (`chunker.py`, `ast_chunker.py`): Employs a three-tier fallback strategy:
 
@@ -129,7 +129,7 @@ The agent follows the **ReAct** (Reasoning + Acting) paradigm:
 
 **Memory**: 
 - Short-term: Sliding window (20 entries, 30K chars) of tool calls and observations within a session.
-- Long-term: Q&A sessions persisted to `.codechat/memory.jsonl` for cross-session recall.
+- Long-term: Q&A sessions persisted to `.snowcode/memory.jsonl` for cross-session recall.
 
 **Tool Suite** (11 tools):
 
@@ -204,9 +204,123 @@ Options: `-s N` max steps, `--no-plan` skip planning, `-m MODEL` LLM
 ## Installation
 
 ```bash
-git clone https://github.com/HUAYUE1024/codechat.git
-cd codechat
+# From the project root directory
 pip install -e .
+```
+
+### Optional Dependencies
+
+```bash
+# Multimodal support (images, PDFs, documents, NetCDF)
+pip install -e ".[multimodal]"
+
+# Scientific data analysis (NetCDF)
+pip install -e ".[scientific]"
+
+# All optional features
+pip install -e ".[multimodal,scientific]"
+```
+
+---
+
+## Deployment Guide
+
+### Prerequisites
+
+- Python 3.10+
+- Git (optional, for project detection)
+- API Key for LLM (DashScope, OpenAI, or Ollama for local)
+
+### Step 1: Clone and Install
+
+```bash
+# Clone the repository
+git clone https://github.com/HUAYUE1024/codechat.git Snowcode
+cd Snowcode
+
+# Install with all features
+pip install -e ".[multimodal,scientific]"
+
+# Verify installation
+snowcode --help
+```
+
+### Step 2: Configure LLM
+
+Set your API key as an environment variable:
+
+```bash
+# Windows (PowerShell)
+$env:DASHSCOPE_API_KEY="your-api-key"
+
+# Linux/Mac
+export DASHSCOPE_API_KEY="your-api-key"
+```
+
+Or use the interactive config command inside any project:
+
+```bash
+snowcode config
+```
+
+Supported backends:
+- **DashScope** (default): `DASHSCOPE_API_KEY`
+- **OpenAI-compatible**: `OPENAI_API_KEY` + `OPENAI_BASE_URL`
+- **Ollama** (local): `OLLAMA_URL` + `OLLAMA_MODEL`
+
+### Step 3: Index Your Project
+
+```bash
+# Navigate to your project directory
+cd /path/to/your/project
+
+# Build the index
+snowcode ingest
+
+# Or force rebuild
+snowcode ingest --reset
+```
+
+### Step 4: Start Using
+
+```bash
+# Ask questions
+snowcode ask "How does authentication work?"
+
+# Interactive chat
+snowcode chat
+
+# Agent mode (autonomous exploration)
+snowcode agent2 "Analyze the project architecture"
+
+# Agent with multi-agent coordination
+snowcode agent2 --multi-agent --workers 2 "Perform a security audit"
+
+# Agent with file creation (generates Markdown reports)
+snowcode agent2 "Generate a Markdown architecture diagram"
+```
+
+### Docker Deployment (Optional)
+
+```dockerfile
+FROM python:3.12-slim
+
+WORKDIR /app
+COPY . .
+RUN pip install -e ".[multimodal,scientific]"
+
+# Set API key at runtime
+ENV DASHSCOPE_API_KEY=your-api-key
+
+CMD ["snowcode", "ingest"]
+```
+
+Build and run:
+
+```bash
+docker build -t snowcode .
+docker run -v $(pwd):/workspace -w /workspace snowcode snowcode ingest
+docker run -v $(pwd):/workspace -w /workspace snowcode snowcode agent2 "Analyze codebase"
 ```
 
 ### Dependencies
@@ -228,10 +342,10 @@ pip install -e .
 
 ## Data Format
 
-All project data stored in `.codechat/`:
+All project data stored in `.snowcode/`:
 
 ```
-.codechat/
+.snowcode/
 ├── config.json              # Index configuration
 ├── embeddings.npy           # Vector matrix (N × 768 float32)
 ├── metadata.json            # Chunk metadata (file, lines, index)
@@ -249,7 +363,7 @@ All project data stored in `.codechat/`:
 
 **Regex Fallback**: 40+ additional languages via pattern matching
 
-**Auto-Skipped**: `.git`, `__pycache__`, `node_modules`, `.venv`, `dist`, `build`, `.codechat`
+**Auto-Skipped**: `.git`, `__pycache__`, `node_modules`, `.venv`, `dist`, `build`, `.snowcode`
 
 ---
 

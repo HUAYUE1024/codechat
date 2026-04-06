@@ -1,11 +1,11 @@
 [project]
-name = "codechat"
-version = "0.2.0"
+name = "Snowcode"
+version = "0.3.1"
 description = "Local RAG-powered CLI tool for chatting with your codebase"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "codechat" }]
+authors = [{ name = "Snowcode" }]
 keywords = ["rag", "llm", "cli", "codebase", "search", "ai", "agent"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -28,8 +28,6 @@ dependencies = [
     "pathspec>=0.12",
     "openai>=1.0",
     "httpx>=0.27",
-    "tree-sitter>=0.22",
-    "tree-sitter-languages>=1.10",
     "python-dotenv>=1.0",
 ]
 
@@ -39,13 +37,29 @@ Repository = "https://github.com/HUAYUE1024/codechat"
 Issues = "https://github.com/HUAYUE1024/codechat/issues"
 
 [project.optional-dependencies]
+ast = [
+    "tree-sitter>=0.22",
+    "tree-sitter-languages>=1.10",
+]
 test = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
 ]
+multimodal = [
+    "Pillow>=10.0",        # Image processing
+    "pytesseract>=0.3",    # OCR text extraction
+    "PyMuPDF>=1.23",       # PDF reading (fitz)
+    "python-docx>=1.1",    # Word document reading
+    "openpyxl>=3.1",       # Excel spreadsheet reading
+    "beautifulsoup4>=4.12", # HTML text extraction
+]
+scientific = [
+    "netCDF4>=1.6",        # NetCDF file reading
+    "xarray>=2023.0",      # Multi-dimensional data analysis
+]
 
 [project.scripts]
-codechat = "codechat.cli:cli"
+snowcode = "codechat.cli:cli"
 
 [build-system]
 requires = ["setuptools>=68"]

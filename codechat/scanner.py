@@ -12,16 +12,16 @@ ALL_EXTENSIONS = CODE_EXTENSIONS | DOC_EXTENSIONS | CONFIG_EXTENSIONS
 
 
 def _load_ignore_patterns(project_root: Path) -> pathspec.PathSpec | None:
-    """Load .gitignore and .codechatignore patterns if available."""
+    """Load .gitignore and .snowcodeignore patterns if available."""
     lines = []
     
     gitignore = project_root / ".gitignore"
     if gitignore.exists():
         lines.extend(gitignore.read_text(encoding="utf-8", errors="ignore").splitlines())
         
-    codechatignore = project_root / ".codechatignore"
-    if codechatignore.exists():
-        lines.extend(codechatignore.read_text(encoding="utf-8", errors="ignore").splitlines())
+    snowcodeignore = project_root / ".snowcodeignore"
+    if snowcodeignore.exists():
+        lines.extend(snowcodeignore.read_text(encoding="utf-8", errors="ignore").splitlines())
         
     # Clean up lines
     valid_lines = [line.strip() for line in lines if line.strip() and not line.strip().startswith("#")]
@@ -58,7 +58,7 @@ def scan_files(project_root: Path, extra_extensions: set[str] | None = None) -> 
         # Prune directories in-place (os.walk supports this)
         dirnames[:] = [
             d for d in dirnames
-            if not _should_skip_dir(d) and d != ".codechat"
+            if not _should_skip_dir(d) and d != ".snowcode"
         ]
 
         rel_dir = Path(dirpath).relative_to(project_root)

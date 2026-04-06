@@ -9,12 +9,12 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from .config import get_codechat_dir
+from .config import get_snowcode_dir, get_llm_config_from_file
 from .store import VectorStore
 
 
 SYSTEM_PROMPT = """\
-你是 codechat，一位资深的代码架构分析师。你的任务是基于提供的代码上下文，准确回答用户关于代码库的问题。
+你是 snowcode，一位资深的代码架构分析师。你的任务是基于提供的代码上下文，准确回答用户关于代码库的问题。
 
 ## 核心原则
 
@@ -88,30 +88,48 @@ def _get_llm_config(model: str | None = None) -> tuple[str, str, str, bool]:
     Resolve LLM backend config.
     Returns (api_key, base_url, model_name, enable_thinking).
     Priority:
-      1. DASHSCOPE_API_KEY  (Alibaba Qwen, thinking support)
-      2. OPENAI_API_KEY     (OpenAI / any compat)
-      3. OLLAMA fallback handled separately
+      1. Environment variables (DASHSCOPE_API_KEY, OPENAI_API_KEY, OLLAMA_URL)
+      2. Project config file (.snowcode/config.json) for model name and thinking mode
+      3. Hardcoded defaults
     """
+    # Try to get project root from current directory
+    cwd = Path.cwd()
+    project_root = cwd
+    for parent in [cwd, *cwd.parents]:
+        if (parent / ".snowcode").exists() or (parent / ".git").exists() or (parent / "pyproject.toml").exists():
+            project_root = parent
+            break
+    
+    # Load config from file (for model name and thinking mode)
+    file_config = get_llm_config_from_file(project_root)
+    
+    # Environment variables override file config
     # DashScope (Alibaba Qwen)
     ds_key = os.environ.get("DASHSCOPE_API_KEY")
     if ds_key:
         ds_url = os.environ.get("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
-        ds_model = model or os.environ.get("CODECHAT_MODEL", "qwen-flash")
-        thinking = os.environ.get("CODECHAT_THINKING", "0") == "1"
+        ds_model = model or os.environ.get("CODECHAT_MODEL", file_config["default_model"])
+        thinking = os.environ.get("CODECHAT_THINKING", "1" if file_config["thinking_enabled"] else "0") == "1"
         return ds_key, ds_url, ds_model, thinking
-
+    
     # OpenAI-compatible
     oa_key = os.environ.get("OPENAI_API_KEY")
     if oa_key:
         oa_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
-        oa_model = model or os.environ.get("CODECHAT_MODEL", "gpt-4o-mini")
-        return oa_key, oa_url, oa_model, False
-
+        oa_model = model or os.environ.get("CODECHAT_MODEL", file_config["default_model"])
+        thinking = file_config["thinking_enabled"]
+        return oa_key, oa_url, oa_model, thinking
+    
     # Ollama (local)
     ollama_url = os.environ.get("OLLAMA_URL")
     if ollama_url:
-        ollama_model = model or os.environ.get("OLLAMA_MODEL", "codellama")
-        return "ollama", ollama_url, ollama_model, False
+        ollama_model = model or os.environ.get("OLLAMA_MODEL", file_config["default_model"])
+        return "ollama", ollama_url, ollama_model, file_config["thinking_enabled"]
+    
+    # No environment variables, use file config only if API key is set there?
+    # Since we don't store API keys in config file (for security), we can't proceed.
+    # Return empty config.
+    return "", "", "", False
 
     return "", "", "", False
 
@@ -311,7 +329,7 @@ def answer_question(
 
     if not results:
         return {
-            "answer": "No relevant code found. Has the project been ingested? Run `codechat ingest` first.",
+            "answer": "No relevant code found. Has the project been ingested? Run `snowcode ingest` first.",
             "sources": [],
             "context": "",
         }
@@ -347,7 +365,7 @@ def answer_question_stream(
     results = store.query(question, n_results=n_context)
 
     if not results:
-        msg = "No relevant code found. Has the project been ingested? Run `codechat ingest` first."
+        msg = "No relevant code found. Has the project been ingested? Run `snowcode ingest` first."
         if on_answer:
             on_answer(msg)
         return {"answer": msg, "sources": [], "context": ""}

@@ -1,4 +1,4 @@
-"""Allow running as `python -m codechat`."""
+"""Allow running as `python -m snowcode`."""
 
 from .cli import main
 

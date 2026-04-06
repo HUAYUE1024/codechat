@@ -166,7 +166,7 @@ def run_skill(
 
     if not results:
         return {
-            "answer": "未找到相关代码。请先运行 `codechat ingest` 建立索引。",
+            "answer": "未找到相关代码。请先运行 `snowcode ingest` 建立索引。",
             "sources": [],
             "context": "",
         }
@@ -208,7 +208,7 @@ def run_skill_stream(
     results = store.query(query, n_results=skill["n_context"])
 
     if not results:
-        msg = "未找到相关代码。请先运行 `codechat ingest` 建立索引。"
+        msg = "未找到相关代码。请先运行 `snowcode ingest` 建立索引。"
         if on_answer:
             on_answer(msg)
         return {"answer": msg, "sources": [], "context": ""}

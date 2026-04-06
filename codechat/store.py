@@ -25,7 +25,7 @@ from contextlib import contextmanager
 import numpy as np
 
 from .chunker import Chunk
-from .config import DEFAULT_EMBEDDING_MODEL, DEFAULT_RERANK_MODEL, get_codechat_dir
+from .config import DEFAULT_EMBEDDING_MODEL, DEFAULT_RERANK_MODEL, get_snowcode_dir
 
 
 _MODEL_LOAD_LOCK = threading.RLock()
@@ -248,7 +248,7 @@ class VectorStore:
 
     def __init__(self, project_root: Path, embedding_model: str | None = None):
         self.project_root = project_root.resolve()
-        self.codechat_dir = get_codechat_dir(self.project_root)
+        self.codechat_dir = get_snowcode_dir(self.project_root)
 
         self._embeddings_dir = self.codechat_dir / "embeddings"
         self._metadata_path = self.codechat_dir / "metadata.json"
@@ -366,7 +366,7 @@ class VectorStore:
             import shutil
             
             # Create a temporary directory in the SAME filesystem to ensure move is atomic
-            temp_dir = Path(tempfile.mkdtemp(prefix="codechat_embeddings_", dir=self.codechat_dir))
+            temp_dir = Path(tempfile.mkdtemp(prefix="snowcode_embeddings_", dir=self.codechat_dir))
             try:
                 # Split and save embeddings into chunks of 5000 to avoid massive IO
                 CHUNK_SIZE = 5000
@@ -572,7 +572,7 @@ class VectorStore:
             c = Console(stderr=True)
             c.print(f"\n[bold red]Error:[/] Embedding dimension mismatch (Index: {self._embeddings.shape[1]}, Query: {q_vec.shape[0]}).", style="red")
             c.print("[yellow]The model you are using has a different vector size than the one used to build the index.[/]", style="yellow")
-            c.print("Please run `[cyan]codechat ingest --reset[/]` to rebuild the index.", style="white")
+            c.print("Please run `[cyan]snowcode ingest --reset[/]` to rebuild the index.", style="white")
             return []
             
         vec_sims = _cosine_similarity(q_vec, self._embeddings)
